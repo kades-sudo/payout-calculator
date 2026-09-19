@@ -1,4 +1,4 @@
-# Payout Calculator — Phase 1–4
+# Payout Calculator — Phase 1–4 (+ Phase 3 refinements)
 
 A single-page, client-side web app that automates OMS transaction enrichment, master-list matching, and Process Raw Details generation for payout processing.
 
@@ -31,8 +31,20 @@ Verified against a real Master_List + Terminal_Mapping + Bank_Cost + Card_Types 
 ### Known gaps (flagged in the app, not silently guessed)
 
 - **Special_Rate (Account Code 005/5)** isn't applied — no sample data existed to verify which Special_Rate column an Account-Code-5 transaction should use, and guessing would silently misprice real transactions.
-- **Actual Bank Charges, Rent, Portal Amount** are external reconciliation figures (bank statement / payout portal) that don't exist in any uploaded sheet. They're editable per report line in the UI, defaulting to 0; everything downstream recalculates live.
+- **Rent, Portal Amount** are external reconciliation figures (payout portal) that don't exist in any uploaded sheet. They're editable per report line in the UI, defaulting to 0; everything downstream recalculates live.
 - **Wallet Classification / Classification** remain unpopulated ("rule pending") — the reference data shows real values for these, but the signal that decides them isn't present in Card Number, Text Message, or any of the six config sheets. Confirmed *not* load-bearing for the payout report itself: the report groups by `Card Type 2`, which is fully resolved.
+
+## Phase 3: calculation refinements, frequency filtering, and Excel export
+
+- **Actual Bank Charges** is now computed, not manual: `SUM(Commission)` for the report line's `Sale`-type transactions (same cross-payment-group scope as Bank Charges itself), per the OMS Commission field. Cross-checked against a real merchant: computed Bank Fee (0.75) and computed Actual Bank Charges (0.76) landed a cent apart — exactly the kind of small, real-world reconciliation variance this metric exists to surface.
+- **Payout Frequency filtering**: the report now only includes merchants whose Master_List `Payout Frequency` matches the selected Daily/Weekly toggle. A blank/unconfigured Payout Frequency matches neither and is excluded from both, same treatment as an unresolved merchant; the report banner reports how many transactions were excluded this way.
+- **Grid View horizontal scrolling** was fixed at the root cause: the flex/grid ancestors of the scrollable tables had no `min-width: 0`, so a wide table forced the whole page wide instead of scrolling internally. Fixed with `minmax(0,1fr)` / `min-width:0` on the layout chain — applies to Process Raw Details and the Daily/Weekly Payout Report Grid Views alike.
+- **Section-aware sticky headers** (web app): implemented with plain CSS `position:sticky` — the payout report's column headers stay pinned while scrolling, and each Account Code's own label sticks directly below them, swapping to the next Account Code's label as you scroll into that section. The first three columns (Account Code, MID, Merchant) stay frozen while scrolling horizontally. This is **not** in the exported Excel file — see the library note below.
+- **Combined Excel export**: unchanged behavior (was already a single workbook, two worksheets, from Phase 4) — `Download Payout Report` produces `Payout_Report_[Frequency]_[PostingDate].xlsx` with a `DAILY`/`WEEKLY PAYOUT` sheet and a `Process Raw Details` sheet. The standalone `Download Process Raw Details` button also stays, for the Phase 1 pre-payout verification checkpoint.
+- **Excel toggle (+/-) sections**: implemented via native Excel column/row outline grouping (`outlineLevel`) — each payment group's 11 columns collapse independently (bounded by blank spacer columns), and each Account Code's merchant rows collapse independently (bounded by that code's own SUBTOTAL row). Verified in the raw exported XML, not just assumed.
+- **Excel column header colors**: implemented using the real Excel built-in Cell Style colors (Input `FFCC99`, Good `C6EFCE`, Bad `FFC7CE`, Neutral `FFEB9C`) plus this workbook's own **actual** theme tints for "Accent 1, Lighter 40%" (`95B3D7`) and "Accent 3, Lighter 40%" (`C3D69B`) — computed from the reference report's own `theme.xml`, not assumed Office defaults. Applied identically to every repeated Card Type section header row. Verified byte-for-byte in the exported file's `styles.xml`.
+- **Library swap required**: the free SheetJS build used through Phase 1–4 (`xlsx.full.min.js`) cannot write cell colors or freeze panes at all — verified empirically, not assumed (its writer hardcodes the sheet view and never serializes a `.s` style). Switched to `xlsx-js-style` (same SheetJS 0.18.5 core, confirmed identical read behavior against the real Master List file, plus style-writing support) to make the header colors possible.
+- **Excel freeze panes / section-aware sticky headers**: **not implemented in the exported file** — confirmed via the same source-level check that no SheetJS build (including `xlsx-js-style`) exposes a freeze-pane writer, and Excel itself has no concept of a header that changes based on scroll position within one sheet (only one static freeze split per worksheet exists at all). Per the user's decision, this is built into the web app's Grid View instead (see above); the exported Excel sheet gets each Account Code section's own repeated header row (Account Code label → payment-group header → column header) rather than a frozen/sticky one.
 
 ## Workflow (Phase 1 scope)
 

@@ -3,7 +3,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 
 <style>
   :root{
@@ -60,12 +60,12 @@
   }
   .subtitle{ color:var(--ink-muted); font-size:14.5px; max-width:62ch; line-height:1.5; }
 
-  .layout{ display:grid; grid-template-columns: 340px 1fr; gap:20px; align-items:start; }
+  .layout{ display:grid; grid-template-columns: 340px minmax(0,1fr); gap:20px; align-items:start; }
   @media (max-width: 860px){ .layout{ grid-template-columns: 1fr; } }
 
   .panel{
     background:var(--surface); border:1px solid var(--border); border-radius:14px;
-    box-shadow:var(--shadow);
+    box-shadow:var(--shadow); min-width:0;
   }
 
   /* ---- Stepper rail ---- */
@@ -131,7 +131,7 @@
   .process-note{ font-size:11.5px; color:var(--ink-muted); text-align:center; }
 
   /* ---- Right column ---- */
-  .right-col{ display:flex; flex-direction:column; gap:18px; }
+  .right-col{ display:flex; flex-direction:column; gap:18px; min-width:0; }
 
   .pipeline{ padding:18px 20px; display:flex; flex-direction:column; gap:12px; }
   .pipeline-title{ font-weight:600; font-size:13.5px; display:flex; align-items:center; gap:8px; }
@@ -172,7 +172,7 @@
   .stat-tile.warn .stat-value{ color:var(--warn); }
   .stat-tile.ok .stat-value{ color:var(--ok); }
 
-  .results-panel{ display:flex; flex-direction:column; }
+  .results-panel{ display:flex; flex-direction:column; min-width:0; }
   .results-head{
     padding:16px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center;
     justify-content:space-between; gap:12px; flex-wrap:wrap;
@@ -210,6 +210,24 @@
   .chip.ok{ background:var(--ok-soft); color:var(--ok); }
   .chip.bad{ background:var(--danger-soft); color:var(--danger); }
   .chip.pending{ background:var(--pending-soft); color:var(--pending); font-family:"IBM Plex Mono",monospace; font-size:10px; }
+
+  /* ---- Payout report: section-aware sticky headers + frozen columns ---- */
+  .report-table thead th{ height:32px; box-sizing:border-box; }
+  .report-table thead tr.group-row th{ top:0; z-index:4; }
+  .report-table thead tr.col-row th{ top:32px; z-index:4; }
+  .report-table tbody tr.section-label td{
+    position:sticky; top:64px; left:0; z-index:3;
+    background:var(--surface-2); color:var(--ink); font-weight:700; font-size:12px;
+    padding:6px 12px; border-top:1px solid var(--border); border-bottom:1px solid var(--border);
+  }
+  .report-table .sticky-col{ position:sticky; z-index:2; }
+  .report-table thead .sticky-col{ z-index:5; }
+  .report-table tbody td.sticky-col{ background:var(--surface); }
+  .report-table tbody tr:hover td.sticky-col{ background:var(--surface-2); }
+  .report-table tbody tr.subtotal-row td.sticky-col, .report-table tbody tr.grandtotal-row td.sticky-col{ background:inherit; }
+  .report-table .sticky-col-1{ width:90px; min-width:90px; max-width:90px; }
+  .report-table .sticky-col-2{ width:130px; min-width:130px; max-width:130px; }
+  .report-table .sticky-col-3{ width:190px; min-width:190px; max-width:190px; overflow:hidden; text-overflow:ellipsis; }
 
   .banner{
     margin:0 20px 16px; padding:10px 14px; border-radius:10px; font-size:12.5px; display:flex; gap:10px; align-items:flex-start;
@@ -340,7 +358,7 @@
     isSample: false,
     result: null,             // {processed, unmatchedMerchants, unmatchedCardTypeCount}
     payoutReport: null,       // {merchantLines, accountCodeGroups, grandTotal, paymentGroups}
-    manualInputs: {}          // lineId -> {actualBankCharges, rent, portalAmount}
+    manualInputs: {}          // lineId -> {rent, portalAmount} — Actual Bank Charges is computed from OMS Commission
   };
 
   // Up to 7 configuration sheets, resolved by fuzzy name match (case/space/punctuation-insensitive).
@@ -832,11 +850,15 @@
     var totalBankFee = round2(sumBy(groups, function(c){ return c.bankFee; }));
     var totalInternalTransfer = round2(sumBy(groups, function(c){ return c.internalTransfer; }));
 
-    var manual = manualInputs[id] || { actualBankCharges: 0, rent: 0, portalAmount: 0 };
+    // Actual Bank Charges comes from the OMS Commission field (Sale-type transactions, this line's
+    // full transaction set — matches Bank Charges' own scope of summing across every payment group).
+    var actualBankCharges = round2(sumBy(rows.filter(function(r){ return norm(r.transactionType) === "sale"; }), function(r){ return toNumber(r.commission); }));
+
+    var manual = manualInputs[id] || { rent: 0, portalAmount: 0 };
     var gain = (!isBelow && g.masterEntry) ? g.masterEntry.gainForBankCharge : 0;
     var fee = (!isBelow && g.masterEntry) ? g.masterEntry.payoutProcessingFee : 0;
 
-    var bankDifference = round2(totalBankFee - manual.actualBankCharges);
+    var bankDifference = round2(totalBankFee - actualBankCharges);
     var deductedRentOthers = round2(totalInternalTransfer - manual.rent - gain);
     var deductedRent = round2(totalInternalTransfer - manual.rent);
     var merchantPayout = round2(deductedRentOthers - fee);
@@ -853,7 +875,7 @@
       groups: groups,
       totalProfit: totalProfit,
       totalBankFee: totalBankFee,
-      actualBankCharges: manual.actualBankCharges,
+      actualBankCharges: actualBankCharges,
       bankDifference: bankDifference,
       totalInternalTransfer: totalInternalTransfer,
       rent: manual.rent,
@@ -868,7 +890,7 @@
     };
   }
 
-  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs){
+  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency){
     var merchantGroups = new Map();
     processed.forEach(function(row){
       if (!row.merchantMatched) return;
@@ -884,6 +906,19 @@
         });
       }
       merchantGroups.get(key).rows.push(row);
+    });
+
+    // Payout Frequency filtering: only merchants whose Master_List Payout Frequency matches the
+    // selected frequency are reported. A blank/unconfigured Payout Frequency matches neither Daily
+    // nor Weekly and is excluded from both, same as an unresolved merchant.
+    var excludedByFrequencyCount = 0;
+    var freqKey = norm(frequency);
+    merchantGroups.forEach(function(g, key){
+      var merchantFreq = norm(g.masterEntry ? g.masterEntry.payoutFrequency : "");
+      if (merchantFreq !== freqKey){
+        excludedByFrequencyCount += g.rows.length;
+        merchantGroups.delete(key);
+      }
     });
 
     var merchantLines = [];
@@ -952,14 +987,15 @@
       return { accountCode: code, lines: lines, subtotal: subtotalOf(lines) };
     });
     var grandTotal = subtotalOf(merchantLines);
-    var unresolvedCount = processed.length - sumBy(merchantLines, function(l){ return l.txnCount; });
+    var unresolvedCount = sumBy(processed, function(r){ return r.merchantMatched ? 0 : 1; });
 
     return {
       paymentGroups: paymentGroups,
       accountCodeGroups: accountCodeGroups,
       merchantLines: merchantLines,
       grandTotal: grandTotal,
-      unresolvedCount: unresolvedCount
+      unresolvedCount: unresolvedCount,
+      excludedByFrequencyCount: excludedByFrequencyCount
     };
   }
 
@@ -1383,7 +1419,7 @@
   var RECON_COLS = [
     { key: "totalProfit", label: "Total Noqoody Profit", num: true },
     { key: "totalBankFee", label: "Bank Charges", num: true },
-    { key: "actualBankCharges", label: "Actual Bank Charges", num: true, editable: true, field: "actualBankCharges" },
+    { key: "actualBankCharges", label: "Actual Bank Charges", num: true },
     { key: "bankDifference", label: "Bank Difference", num: true },
     { key: "totalInternalTransfer", label: "Total Internal Transfer", num: true },
     { key: "rent", label: "Rent", num: true, editable: true, field: "rent" },
@@ -1404,7 +1440,7 @@
   function recomputeAndRenderPayoutReport(){
     var bankCostIndex = buildBankCostIndex(state.bankCostRows);
     var paymentGroups = buildPaymentGroups(state.cardTypesRows);
-    state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs);
+    state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs, state.frequency);
     renderPayoutReport(state.payoutReport);
   }
 
@@ -1460,10 +1496,12 @@
     notice.className = "banner warn";
     notice.style.margin = "16px 20px";
     notice.innerHTML =
-      "This report groups by Card Type 2 (payment group) and applies the Master_List / Terminal_Mapping / Bank_Cost / Card_Types connections and the Below Amount Rule split. Not yet implemented, so treated as 0 / unused: " +
+      "This report groups by Card Type 2 (payment group), only includes merchants tagged " + escapeHtml(state.frequency || "") + " in Master_List, and applies the Master_List / Terminal_Mapping / Bank_Cost / Card_Types connections and the Below Amount Rule split. " +
+      "<strong>Actual Bank Charges</strong> is computed from the OMS Commission field. Not yet implemented, so treated as 0 / unused: " +
       "<strong>Special_Rate</strong> overrides for Account Code 5, and <strong>Wallet Classification / Classification</strong> (kept pending, and confirmed not to affect this report's grouping in the reference sample). " +
-      "<strong>Actual Bank Charges</strong>, <strong>Rent</strong> and <strong>Portal Amount</strong> come from your bank statement / payout portal, not from any uploaded sheet — enter them per merchant below; everything downstream recalculates live." +
-      (report.unresolvedCount > 0 ? ("<br>" + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row and are excluded from this report.") : "");
+      "<strong>Rent</strong> and <strong>Portal Amount</strong> come from your payout portal, not from any uploaded sheet — enter them per merchant below; everything downstream recalculates live." +
+      (report.unresolvedCount > 0 ? ("<br>" + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row and are excluded from this report.") : "") +
+      (report.excludedByFrequencyCount > 0 ? ("<br>" + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency and are excluded from this report.") : "");
     body.appendChild(notice);
 
     var summary = document.createElement("div");
@@ -1476,20 +1514,36 @@
       statTile(fmtAmount(report.grandTotal.totalTransfer), "Total Transfer", "");
     body.appendChild(summary);
 
+    var totalCols = 3 + report.paymentGroups.length * GROUP_SUBCOLS.length + RECON_COLS.length + FINAL_COLS.length;
+    var STICKY_LEFT = [0, 90, 220]; // Account Code, MID, Merchant — matches CSS .sticky-col-3 max-width
+    function stickyTh(html, idx){
+      return '<th class="sticky-col sticky-col-' + (idx + 1) + '" style="left:' + STICKY_LEFT[idx] + 'px">' + html + "</th>";
+    }
+    function stickyTd(html, idx, extraClass){
+      return '<td class="sticky-col sticky-col-' + (idx + 1) + (extraClass ? " " + extraClass : "") + '" style="left:' + STICKY_LEFT[idx] + 'px">' + html + "</td>";
+    }
+    function stickyLabelTd(html){
+      // Spans columns 1-3 as one sticky cell (used for section/subtotal/grand-total label rows).
+      return '<td class="sticky-col sticky-col-1" style="left:0" colspan="3">' + html + "</td>";
+    }
+
     var scroll = document.createElement("div");
     scroll.className = "table-scroll";
     var table = document.createElement("table");
+    table.className = "report-table";
 
     var thead = document.createElement("thead");
     var groupRow = document.createElement("tr");
-    groupRow.innerHTML = "<th></th><th></th><th></th>" +
+    groupRow.className = "group-row";
+    groupRow.innerHTML = stickyTh("", 0) + stickyTh("", 1) + stickyTh("", 2) +
       report.paymentGroups.map(function(pg){ return '<th colspan="' + GROUP_SUBCOLS.length + '">' + escapeHtml(pg.name.toUpperCase()) + "</th>"; }).join("") +
       '<th colspan="' + RECON_COLS.length + '">FINAL RECONCILIATION</th>' +
       '<th colspan="' + FINAL_COLS.length + '">TRANSFER</th>';
     thead.appendChild(groupRow);
 
     var headRow = document.createElement("tr");
-    var headHtml = "<th>Account Code</th><th>MID</th><th>Merchant</th>";
+    headRow.className = "col-row";
+    var headHtml = stickyTh("Account Code", 0) + stickyTh("MID", 1) + stickyTh("Merchant", 2);
     report.paymentGroups.forEach(function(){
       GROUP_SUBCOLS.forEach(function(col){ headHtml += "<th>" + escapeHtml(col.label) + "</th>"; });
     });
@@ -1500,32 +1554,38 @@
 
     var tbody = document.createElement("tbody");
     report.accountCodeGroups.forEach(function(group){
+      var labelTr = document.createElement("tr");
+      labelTr.className = "section-label";
+      labelTr.innerHTML = '<td colspan="' + totalCols + '">Account Code ' + escapeHtml(group.accountCode) + "</td>";
+      tbody.appendChild(labelTr);
+
       group.lines.forEach(function(line){
         var tr = document.createElement("tr");
         tr.innerHTML =
-          "<td>" + escapeHtml(line.accountCode) + "</td>" +
-          "<td>" + escapeHtml(line.mid) + "</td>" +
-          "<td>" + escapeHtml(line.label) + "</td>" +
+          stickyTd(escapeHtml(line.accountCode), 0) +
+          stickyTd(escapeHtml(line.mid), 1) +
+          stickyTd(escapeHtml(line.label), 2) +
           groupCellsHtml(line.groups, false) +
           reconRow(line.label, line, false);
         tbody.appendChild(tr);
       });
       var subTr = document.createElement("tr");
-      subTr.className = "unmatched";
+      subTr.className = "subtotal-row";
       subTr.style.background = "var(--surface-2)";
       subTr.style.fontWeight = "600";
       subTr.innerHTML =
-        '<td colspan="3">SUBTOTAL — Account Code ' + escapeHtml(group.accountCode) + "</td>" +
+        stickyLabelTd("SUBTOTAL — Account Code " + escapeHtml(group.accountCode)) +
         groupCellsHtml(group.subtotal.groups, true) +
         reconRow("", group.subtotal, true);
       tbody.appendChild(subTr);
     });
 
     var grandTr = document.createElement("tr");
+    grandTr.className = "grandtotal-row";
     grandTr.style.background = "var(--accent-soft)";
     grandTr.style.fontWeight = "700";
     grandTr.innerHTML =
-      '<td colspan="3">GRAND TOTAL — ALL ACCOUNT CODES</td>' +
+      stickyLabelTd("GRAND TOTAL — ALL ACCOUNT CODES") +
       groupCellsHtml(report.grandTotal.groups, true) +
       reconRow("", report.grandTotal, true);
     tbody.appendChild(grandTr);
@@ -1539,11 +1599,36 @@
         var lineId = input.dataset.line;
         var field = input.dataset.field;
         var val = toNumber(input.value);
-        if (!state.manualInputs[lineId]) state.manualInputs[lineId] = { actualBankCharges: 0, rent: 0, portalAmount: 0 };
+        if (!state.manualInputs[lineId]) state.manualInputs[lineId] = { rent: 0, portalAmount: 0 };
         state.manualInputs[lineId][field] = val;
         recomputeAndRenderPayoutReport();
       });
     });
+  }
+
+  // Excel built-in Cell Style colors (theme-independent) and this workbook's actual Accent1/Accent3
+  // theme tints (computed from the reference report's own theme.xml, not assumed defaults).
+  var XLCOLOR = {
+    input: { fill: "FFCC99", font: "3F3F76" },
+    good: { fill: "C6EFCE", font: "006100" },
+    bad: { fill: "FFC7CE", font: "9C0006" },
+    neutral: { fill: "FFEB9C", font: "9C6500" },
+    accent1Light40: { fill: "95B3D7", font: null },
+    accent3Light40: { fill: "C3D69B", font: null }
+  };
+  var HEADER_COLOR_BY_KEY = {
+    accountCode: "input", mid: "good", merchant: "bad",
+    gross: "input", bankRate: "neutral", bankFee: "neutral", merchantRate: "input",
+    noqoodyCharge: "accent1Light40", clearedTxn: "input", ratePerTxn: "input",
+    noqoodyChargePerTxn: "input", refund: "input", profit: "accent3Light40", internalTransfer: "bad"
+  };
+
+  function styleCell(ws, addr, colorKey, bold){
+    var c = XLCOLOR[colorKey];
+    if (!c || !ws[addr]) return;
+    var s = { fill: { fgColor: { rgb: "FF" + c.fill } }, font: { bold: bold !== false } };
+    if (c.font) s.font.color = { rgb: "FF" + c.font };
+    ws[addr].s = s;
   }
 
   function downloadPayoutReport(){
@@ -1551,44 +1636,112 @@
     var freq = state.frequency || "Daily";
     var sheetName = (freq === "Weekly" ? "WEEKLY" : "DAILY") + " PAYOUT";
 
-    var rows = [];
-    var groupHeader = ["", "", ""];
-    report.paymentGroups.forEach(function(pg){
-      groupHeader.push(pg.name.toUpperCase());
-      for (var i = 1; i < GROUP_SUBCOLS.length; i++) groupHeader.push("");
-    });
-    groupHeader.push("FINAL RECONCILIATION");
-    for (var i = 1; i < RECON_COLS.length; i++) groupHeader.push("");
-    groupHeader.push("TRANSFER");
-    for (var i = 1; i < FINAL_COLS.length; i++) groupHeader.push("");
-    rows.push(groupHeader);
+    var SPACER = "";
+    var GROUP_COL_KEYS = ["gross", "bankRate", "bankFee", "merchantRate", "noqoodyCharge", "clearedTxn", "ratePerTxn", "noqoodyChargePerTxn", "refund", "profit", "internalTransfer"];
+    var colsPerGroup = GROUP_SUBCOLS.length + 1; // + spacer
+    var leadCols = 3;
+    var reconStartCol = leadCols + report.paymentGroups.length * colsPerGroup;
+    var finalStartCol = reconStartCol + RECON_COLS.length + 1; // + spacer before TRANSFER block
 
-    var colHeader = ["Account Code", "MID", "Merchant"];
-    report.paymentGroups.forEach(function(){ GROUP_SUBCOLS.forEach(function(c){ colHeader.push(c.label); }); });
-    RECON_COLS.concat(FINAL_COLS).forEach(function(c){ colHeader.push(c.label); });
-    rows.push(colHeader);
-
-    function lineToRow(prefix, line, groups, recon){
+    function buildGroupHeaderRow(){
+      var row = ["", "", ""];
+      report.paymentGroups.forEach(function(pg){
+        row.push(pg.name.toUpperCase());
+        for (var i = 1; i < GROUP_SUBCOLS.length; i++) row.push("");
+        row.push(SPACER);
+      });
+      row.push("FINAL RECONCILIATION");
+      for (var i = 1; i < RECON_COLS.length; i++) row.push("");
+      row.push(SPACER);
+      row.push("TRANSFER");
+      for (var i = 1; i < FINAL_COLS.length; i++) row.push("");
+      return row;
+    }
+    function buildColHeaderRow(){
+      var row = ["Account Code", "MID", "Merchant"];
+      report.paymentGroups.forEach(function(){
+        GROUP_SUBCOLS.forEach(function(c){ row.push(c.label); });
+        row.push(SPACER);
+      });
+      RECON_COLS.forEach(function(c){ row.push(c.label); });
+      row.push(SPACER);
+      FINAL_COLS.forEach(function(c){ row.push(c.label); });
+      return row;
+    }
+    function lineToRow(prefix, groups, recon){
       var row = prefix.slice();
-      groups.forEach(function(g){
-        GROUP_SUBCOLS.forEach(function(c){ row.push(c.pct ? g[c.key] : g[c.key]); });
+      (groups || report.paymentGroups.map(function(){ return null; })).forEach(function(g){
+        GROUP_SUBCOLS.forEach(function(c){ row.push(g ? g[c.key] : ""); });
+        row.push(SPACER);
       });
-      RECON_COLS.concat(FINAL_COLS).forEach(function(c){
-        var v = recon[c.key];
-        row.push(v === null || v === undefined ? "" : v);
-      });
+      RECON_COLS.forEach(function(c){ var v = recon ? recon[c.key] : ""; row.push(v === null || v === undefined ? "" : v); });
+      row.push(SPACER);
+      FINAL_COLS.forEach(function(c){ var v = recon ? recon[c.key] : ""; row.push(v === null || v === undefined ? "" : v); });
       return row;
     }
 
+    var rows = [];
+    var rowLevels = [];    // outline level per row (0 = section header/summary, 1 = collapsible detail)
+    var colHeaderRowIdxs = []; // 0-based row indices that are column-header rows (for coloring)
+    var merges = [];
+
+    function pushRow(arr, level){ rows.push(arr); rowLevels.push(level || 0); return rows.length - 1; }
+    function addMerge(r, c1, c2){ if (c2 > c1) merges.push({ s: { r: r, c: c1 }, e: { r: r, c: c2 } }); }
+
     report.accountCodeGroups.forEach(function(group){
-      group.lines.forEach(function(line){
-        rows.push(lineToRow([line.accountCode, line.mid, line.label], line, line.groups, line));
+      var labelRowIdx = pushRow(["Account Code " + group.accountCode], 0);
+      addMerge(labelRowIdx, 0, finalStartCol + FINAL_COLS.length - 1);
+
+      var groupHeaderRowIdx = pushRow(buildGroupHeaderRow(), 0);
+      var gc = leadCols;
+      report.paymentGroups.forEach(function(pg){
+        addMerge(groupHeaderRowIdx, gc, gc + GROUP_SUBCOLS.length - 1);
+        gc += colsPerGroup;
       });
-      rows.push(lineToRow(["", "", "SUBTOTAL — Account Code " + group.accountCode], null, group.subtotal.groups, group.subtotal));
+      addMerge(groupHeaderRowIdx, reconStartCol, reconStartCol + RECON_COLS.length - 1);
+      addMerge(groupHeaderRowIdx, finalStartCol, finalStartCol + FINAL_COLS.length - 1);
+
+      var colHeaderRowIdx = pushRow(buildColHeaderRow(), 0);
+      colHeaderRowIdxs.push(colHeaderRowIdx);
+
+      group.lines.forEach(function(line){
+        pushRow(lineToRow([line.accountCode, line.mid, line.label], line.groups, line), 1);
+      });
+      var subRowIdx = pushRow(lineToRow(["SUBTOTAL — Account Code " + group.accountCode, "", ""], group.subtotal.groups, group.subtotal), 0);
+      addMerge(subRowIdx, 0, 2);
     });
-    rows.push(lineToRow(["", "", "GRAND TOTAL — ALL ACCOUNT CODES"], null, report.grandTotal.groups, report.grandTotal));
+
+    var grandRowIdx = pushRow(lineToRow(["GRAND TOTAL — ALL ACCOUNT CODES", "", ""], report.grandTotal.groups, report.grandTotal), 0);
+    addMerge(grandRowIdx, 0, 2);
 
     var reportSheet = XLSX.utils.aoa_to_sheet(rows);
+    reportSheet["!merges"] = merges;
+    reportSheet["!rows"] = rowLevels.map(function(level){ return level > 0 ? { level: level } : {}; });
+
+    // Column Type toggles: each payment group's 11 columns get their own outline group (bounded by the
+    // level-0 spacer columns either side), so they collapse/expand independently in Excel.
+    var colLevels = new Array(finalStartCol + FINAL_COLS.length).fill(0);
+    var cc = leadCols;
+    report.paymentGroups.forEach(function(){
+      for (var i = 0; i < GROUP_SUBCOLS.length; i++) colLevels[cc + i] = 1;
+      cc += colsPerGroup;
+    });
+    reportSheet["!cols"] = colLevels.map(function(level){ return level > 0 ? { level: level } : {}; });
+
+    // Column header colors — applied identically to every repeated Card Type section header row.
+    colHeaderRowIdxs.forEach(function(r){
+      styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 0 }), HEADER_COLOR_BY_KEY.accountCode);
+      styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 1 }), HEADER_COLOR_BY_KEY.mid);
+      styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 2 }), HEADER_COLOR_BY_KEY.merchant);
+      var col = leadCols;
+      report.paymentGroups.forEach(function(){
+        GROUP_SUBCOLS.forEach(function(subcol, i){
+          styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: col + i }), HEADER_COLOR_BY_KEY[GROUP_COL_KEYS[i]]);
+        });
+        col += colsPerGroup;
+      });
+    });
+
     var prdExportRows = state.result.processed.map(function(row){
       var out = {};
       COLUMNS.forEach(function(col){ out[col.label] = row[col.key]; });
