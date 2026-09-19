@@ -1,4 +1,4 @@
-# Payout Calculator — Phase 1–2
+# Payout Calculator — Phase 1–4
 
 A single-page, client-side web app that automates OMS transaction enrichment, master-list matching, and Process Raw Details generation for payout processing.
 
@@ -10,14 +10,29 @@ The Master List / Configuration upload recognizes up to six sheets by fuzzy name
 
 | Sheet | Required this phase | Notes |
 |---|---|---|
-| `Master_List` | Yes | Primary key `MID`. Merged across every uploaded workbook, so separate Daily/Weekly lists can be uploaded together. |
+| `Master_List` | Yes | Primary key `MID` (+ `Merchant Key` for shared-MID merchants). Merged across every uploaded workbook, so separate Daily/Weekly lists can be uploaded together. |
 | `Card Type Classification` | Yes | Column A = lookup key, column B (`Card Type 1`) = output **Card Type**, column C (`Card Type 2`) = output **Card Type 2** — verified against a real export; header names are matched first, with A/B/C position as fallback. |
-| `Terminal_Mapping` | No (parsed, not yet used) | Keyed by MID + Terminal ID. |
-| `Bank_Cost` | No (parsed, not yet used) | Keyed by Cost ID. |
-| `Special_Rate` | No (parsed, not yet used) | Keyed by Account Code. |
-| `Card_Types` | No (parsed, not yet used) | Maps Payment Group → Master List rate column → Bank Cost column. |
+| `Terminal_Mapping` | Recommended | Keyed by MID + Terminal ID → Merchant Key + Account Code. Used from Phase 4 onward for the shared-MID chain (see below). |
+| `Bank_Cost` | Recommended | Keyed by Cost ID; one rate column per payment group. Used for the payout report's Bank Rate/Bank Fee. |
+| `Special_Rate` | No (parsed, not yet used) | Keyed by Account Code; overrides for Account Code 005/5. **Not applied yet** — see Known gaps below. |
+| `Card_Types` | Recommended | One row per payment group, naming which Master_List column holds the merchant rate and which Bank_Cost column holds the bank rate. Drives the payout report's column set dynamically — add a row here to add a payment group, no code change needed. |
 
-The four optional sheets are detected, parsed and row-counted in the Step 1 checklist so a following phase can wire in merchant-rate lookup, bank-cost lookup, and Account Code / terminal matching without re-touching the ingestion layer.
+## Master List / Configuration connections (Phase 4)
+
+Verified against a real Master_List + Terminal_Mapping + Bank_Cost + Card_Types workbook and a real Daily Payout report (3,707-transaction cross-check, exact to the cent on every formula below):
+
+1. **Shared-MID merchant resolution**: for each transaction, `MID + Terminal ID` is looked up in `Terminal_Mapping` to get a `Merchant Key` + `Account Code`; `MID + Merchant Key` is then looked up in `Master_List` (blank Merchant Key = the ordinary one-merchant-per-MID case) to get the merchant's name, rates and configuration. This is now how **both** Process Raw Details' `Merchant` column and the payout report resolve merchants — a single physical MID can host several distinct merchants, disambiguated only by which terminal took the transaction. Falls back to a plain MID match when a terminal isn't in `Terminal_Mapping`.
+2. **Cost ID → Bank_Cost**: the merchant's `Cost ID` selects its Bank_Cost row.
+3. **Card_Types "Master List Rate Column" → Master_List**: for a transaction's payment group (its `Card Type 2`), this names which Master_List column holds that merchant's rate.
+4. **Card_Types "Cost Table Column" → Bank_Cost**: same, for which Bank_Cost column holds the bank's rate.
+5. **Below Amount Rule**: a merchant's transactions split into two report lines — `>= threshold` (normal) and `< threshold` (a `"<Merchant> | BELOW <threshold>"` line). Only the below-threshold line carries a per-transaction charge (`Cleared Txn × Rate Per Trnx`); `Gain For Bank Charge` and `Payout Processing Fee` apply once, on the normal line only.
+6. **Report formulas** (per merchant line × payment group): `Bank Fee = Gross × Bank Rate`, `Noqoody Charge = Gross × Merchant Rate`, `Noqoody Profit = Noqoody Charge + Charge/Txn − Bank Fee − Refund`, `Internal Transfer = Gross − Noqoody Charge − Charge/Txn − Refund`. `Gross Collection`/`Cleared Txn` count `Sale`-type transactions only; `Refund` sums the absolute value of every non-`Sale` transaction (Refund, Dispute, ...).
+
+### Known gaps (flagged in the app, not silently guessed)
+
+- **Special_Rate (Account Code 005/5)** isn't applied — no sample data existed to verify which Special_Rate column an Account-Code-5 transaction should use, and guessing would silently misprice real transactions.
+- **Actual Bank Charges, Rent, Portal Amount** are external reconciliation figures (bank statement / payout portal) that don't exist in any uploaded sheet. They're editable per report line in the UI, defaulting to 0; everything downstream recalculates live.
+- **Wallet Classification / Classification** remain unpopulated ("rule pending") — the reference data shows real values for these, but the signal that decides them isn't present in Card Number, Text Message, or any of the six config sheets. Confirmed *not* load-bearing for the payout report itself: the report groups by `Card Type 2`, which is fully resolved.
 
 ## Workflow (Phase 1 scope)
 

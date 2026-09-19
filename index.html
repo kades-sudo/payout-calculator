@@ -194,6 +194,12 @@
   }
   tbody td{ padding:8px 12px; border-bottom:1px solid var(--border); white-space:nowrap; }
   tbody td.num{ font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; text-align:right; }
+  tbody td.num.muted{ color:var(--ink-muted); }
+  .report-input{
+    width:84px; font-family:"IBM Plex Mono",monospace; font-size:12px; text-align:right;
+    background:var(--surface-2); border:1px solid var(--border); border-radius:6px; padding:3px 6px; color:var(--ink);
+  }
+  .report-input:focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
   tbody tr:hover{ background:var(--surface-2); }
   tbody tr.unmatched{ background:var(--danger-soft); }
   tbody tr.unmatched:hover{ background:var(--danger-soft); filter:brightness(0.97); }
@@ -286,7 +292,7 @@
         <ol class="pipeline-list" id="pipelineList">
           <li data-step="cardtype"><span class="dot"></span>Card Type lookup</li>
           <li data-step="cardtype2"><span class="dot"></span>Card Type 2 lookup</li>
-          <li data-step="merchant"><span class="dot"></span>Merchant lookup (MID → Master_List)</li>
+          <li data-step="merchant"><span class="dot"></span>Merchant lookup (Terminal_Mapping → Merchant Key → Master_List)</li>
           <li data-step="wallet" class="pending-rule"><span class="dot"></span>Wallet Classification lookup<span class="tag">rule pending</span></li>
           <li data-step="classification" class="pending-rule"><span class="dot"></span>Classification lookup<span class="tag">rule pending</span></li>
           <li data-step="build"><span class="dot"></span>Create Process Raw Details</li>
@@ -299,10 +305,21 @@
           <div>No Process Raw Details yet.<br>Complete steps 1–3 on the left, then click <strong>Process Payout</strong>.</div>
         </div>
       </div>
+
+      <div class="panel results-panel" id="payoutReportPanel" hidden>
+        <div class="results-head">
+          <div class="results-title">Daily / Weekly Payout Report</div>
+          <div class="head-actions">
+            <button class="btn btn-primary" id="generateReportBtn" type="button">Generate Payout Report</button>
+            <button class="btn btn-secondary" id="downloadReportBtn" type="button" hidden>Download Payout Report</button>
+          </div>
+        </div>
+        <div id="payoutReportBody"></div>
+      </div>
     </div>
   </div>
 
-  <footer>Phase 1: card type &amp; merchant lookups, Process Raw Details generation and verification download. Phase 2 (in progress): full Master List workbook ingestion — Terminal_Mapping, Bank_Cost, Special_Rate and Card_Types are now recognized and parsed. Wallet Classification, Classification, exact matching rules and rate/fee calculation still follow in later phases.</footer>
+  <footer>Phase 1: card type &amp; merchant lookups, Process Raw Details generation and verification download. Phase 2: full Master List workbook ingestion. Phase 4: Master List / Terminal_Mapping / Bank_Cost / Card_Types connections and the Daily/Weekly Payout Report calculation engine. Wallet Classification, Classification, Special_Rate (Account Code 5) overrides, and the exact source of Actual Bank Charges / Rent / Portal Amount remain open — see the notice in the report panel.</footer>
 </div>
 
 <script>
@@ -321,7 +338,9 @@
     frequency: null,
     omsFile: null,            // {name, rows}
     isSample: false,
-    result: null              // {processed, unmatchedMerchants, unmatchedCardTypeCount}
+    result: null,             // {processed, unmatchedMerchants, unmatchedCardTypeCount}
+    payoutReport: null,       // {merchantLines, accountCodeGroups, grandTotal, paymentGroups}
+    manualInputs: {}          // lineId -> {actualBankCharges, rent, portalAmount}
   };
 
   // Up to 7 configuration sheets, resolved by fuzzy name match (case/space/punctuation-insensitive).
@@ -373,8 +392,24 @@
     invoiceNo: ["invoiceno", "invoicenumber"],
     textMessage: ["textmessage"]
   };
-  var MASTER_MID_CANDIDATES = ["mid", "merchantid"];
-  var MASTER_NAME_CANDIDATES = ["merchantname", "merchant", "name"];
+  var TERMINAL_FIELD_CANDIDATES = {
+    mid: ["mid", "merchantid"],
+    terminalId: ["terminalid", "tid"],
+    merchantKey: ["merchantkey"],
+    accountCode: ["accountcode"]
+  };
+  var MASTER_FIELD_CANDIDATES = {
+    mid: ["mid", "merchantid"],
+    merchantKey: ["merchantkey"],
+    merchantName: ["merchantname", "merchant", "name"],
+    payoutFrequency: ["payoutfrequency"],
+    costId: ["costid"],
+    belowAmountRule: ["belowamountrule"],
+    ratePerTrnx: ["ratepertrnx", "ratepertxn"],
+    gainForBankCharge: ["noqoodygainforbankcharge", "gainforbankcharge", "noqoodygainforbankcharges"],
+    payoutProcessingFee: ["payoutprocessingfee"],
+    status: ["status"]
+  };
 
   function buildResolver(headers, candidateMap){
     var normHeaders = headers.map(norm);
@@ -449,6 +484,44 @@
     return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function(c){
       return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c];
     });
+  }
+
+  function toNumber(v){
+    if (v === "" || v === undefined || v === null) return 0;
+    var n = Number(v);
+    return isNaN(n) ? 0 : n;
+  }
+
+  // Bank_Cost / Master_List rate cells are inconsistently entered: most are true fractions (0.0185),
+  // some are percentage points (1.85, meaning 1.85%). A value over 1 can never be a real rate, so
+  // treat it as percentage points and normalize to a fraction.
+  function toRate(v){
+    var n = toNumber(v);
+    return n > 1 ? n / 100 : n;
+  }
+
+  function round2(n){
+    return Math.round((n + Number.EPSILON) * 100) / 100;
+  }
+
+  function sumBy(arr, fn){
+    var total = 0;
+    for (var i = 0; i < arr.length; i++) total += fn(arr[i]);
+    return total;
+  }
+
+  // Card_Types' "Master List Rate Column" / "Cost Table Column" values must match a real header in
+  // Master_List / Bank_Cost, but those headers sometimes carry stray whitespace ("PAYOUT PROCESSING FEE ")
+  // — so match by normalized name if an exact key isn't present.
+  function getByNormalizedKey(obj, name){
+    if (!obj || !name) return undefined;
+    if (obj[name] !== undefined) return obj[name];
+    var target = norm(name);
+    var keys = Object.keys(obj);
+    for (var i = 0; i < keys.length; i++){
+      if (norm(keys[i]) === target) return obj[keys[i]];
+    }
+    return undefined;
   }
 
   /* ---------------- sample data ---------------- */
@@ -536,20 +609,109 @@
     return map;
   }
 
-  function buildMerchantMap(masterListRows){
+  // Master List / Configuration connections (Phase 4):
+  // Terminal_Mapping resolves MID + Terminal ID -> Merchant Key + Account Code, which disambiguates
+  // "shared MID" merchants (several distinct merchants trading under one physical MID via different
+  // terminals). Master_List is then matched by MID + Merchant Key (blank Merchant Key = the ordinary
+  // single-merchant-per-MID case). This was verified against a real Terminal_Mapping/Master_List pair
+  // where one MID mapped to ten+ terminals across ten different Merchant Key rows.
+  function buildTerminalMapIndex(rows){
     var map = new Map();
-    if (!masterListRows || !masterListRows.length) return map;
-    var headers = Object.keys(masterListRows[0]);
-    var midKey = resolveSingle(headers, MASTER_MID_CANDIDATES);
-    var nameKey = resolveSingle(headers, MASTER_NAME_CANDIDATES);
-    masterListRows.forEach(function(row){
-      var mid = midKey ? row[midKey] : null;
-      var name = nameKey ? row[nameKey] : null;
-      if (mid !== null && mid !== undefined && String(mid).trim() !== "") {
-        map.set(norm(mid), name);
-      }
+    if (!rows || !rows.length) return map;
+    var headers = Object.keys(rows[0]);
+    var resolver = buildResolver(headers, TERMINAL_FIELD_CANDIDATES);
+    rows.forEach(function(row){
+      var mid = resolver.mid ? row[resolver.mid] : "";
+      if (String(mid === undefined || mid === null ? "" : mid).trim() === "") return;
+      var key = norm(mid) + "|" + norm(resolver.terminalId ? row[resolver.terminalId] : "");
+      if (map.has(key)) return; // first match wins
+      map.set(key, {
+        merchantKey: resolver.merchantKey ? row[resolver.merchantKey] : "",
+        accountCode: resolver.accountCode ? row[resolver.accountCode] : ""
+      });
     });
     return map;
+  }
+
+  function buildMasterListIndex(rows){
+    var map = new Map();
+    if (!rows || !rows.length) return map;
+    var headers = Object.keys(rows[0]);
+    var resolver = buildResolver(headers, MASTER_FIELD_CANDIDATES);
+    rows.forEach(function(row){
+      var mid = resolver.mid ? row[resolver.mid] : "";
+      if (String(mid === undefined || mid === null ? "" : mid).trim() === "") return;
+      var key = norm(mid) + "|" + norm(resolver.merchantKey ? row[resolver.merchantKey] : "");
+      map.set(key, {
+        raw: row,
+        merchantName: resolver.merchantName ? row[resolver.merchantName] : "",
+        payoutFrequency: resolver.payoutFrequency ? row[resolver.payoutFrequency] : "",
+        costId: resolver.costId ? row[resolver.costId] : "",
+        belowAmountRule: toNumber(resolver.belowAmountRule ? row[resolver.belowAmountRule] : ""),
+        ratePerTrnx: toNumber(resolver.ratePerTrnx ? row[resolver.ratePerTrnx] : ""),
+        gainForBankCharge: toNumber(resolver.gainForBankCharge ? row[resolver.gainForBankCharge] : ""),
+        payoutProcessingFee: toNumber(resolver.payoutProcessingFee ? row[resolver.payoutProcessingFee] : ""),
+        status: resolver.status ? row[resolver.status] : ""
+      });
+    });
+    return map;
+  }
+
+  function buildBankCostIndex(rows){
+    var map = new Map();
+    if (!rows || !rows.length) return map;
+    var headers = Object.keys(rows[0]);
+    var costIdKey = resolveSingle(headers, ["costid"]);
+    rows.forEach(function(row){
+      var cid = costIdKey ? row[costIdKey] : "";
+      if (String(cid === undefined || cid === null ? "" : cid).trim() === "") return;
+      map.set(norm(cid), row);
+    });
+    return map;
+  }
+
+  // Card_Types defines the payout report's payment-group blocks dynamically: which Master_List
+  // column holds a merchant's rate for that group, and which Bank_Cost column holds the bank's rate.
+  function buildPaymentGroups(rows){
+    if (!rows || !rows.length) return [];
+    var headers = Object.keys(rows[0]);
+    var nameKey = resolveSingle(headers, ["cardtype", "paymentgroup"]);
+    var mlColKey = resolveSingle(headers, ["masterlistratecolumn"]);
+    var costColKey = resolveSingle(headers, ["costtablecolumn"]);
+    var orderKey = resolveSingle(headers, ["order"]);
+    var groups = rows.map(function(row, i){
+      var name = nameKey ? String(row[nameKey] === undefined ? "" : row[nameKey]).trim() : "";
+      return {
+        name: name,
+        masterListRateColumn: mlColKey ? row[mlColKey] : "",
+        costTableColumn: costColKey ? row[costColKey] : "",
+        order: orderKey && row[orderKey] !== "" ? toNumber(row[orderKey]) : i
+      };
+    }).filter(function(g){ return g.name; });
+    groups.sort(function(a, b){ return a.order - b.order; });
+    return groups;
+  }
+
+  // Resolves one OMS transaction to its Master_List configuration row.
+  // Falls back to a plain MID match (against a blank-Merchant-Key Master_List row) when Terminal_Mapping
+  // doesn't cover the transaction's terminal, so single-terminal merchants still resolve without it.
+  function resolveMerchant(row, terminalMapIndex, masterListIndex){
+    var tm = terminalMapIndex.get(norm(row.merchantId) + "|" + norm(row.terminalId));
+    var terminalMatched = !!tm;
+    var merchantKey = tm ? tm.merchantKey : "";
+    var accountCode = tm ? tm.accountCode : "";
+    var ml = masterListIndex.get(norm(row.merchantId) + "|" + norm(merchantKey));
+    if (!ml && !terminalMatched){
+      ml = masterListIndex.get(norm(row.merchantId) + "|");
+    }
+    return {
+      terminalMatched: terminalMatched,
+      merchantMatched: !!ml,
+      merchant: ml ? ml.merchantName : "",
+      accountCode: accountCode,
+      merchantKey: merchantKey,
+      masterListEntry: ml || null
+    };
   }
 
   function normalizeOmsRows(rawRows){
@@ -566,19 +728,18 @@
     });
   }
 
-  function runPipeline(masterListRows, cardTypeMatrix, omsRowsRaw){
-    var merchantMap = buildMerchantMap(masterListRows);
+  function runPipeline(masterListRows, cardTypeMatrix, omsRowsRaw, terminalMappingRows){
     var cardTypeMap = buildCardTypeMap(cardTypeMatrix);
+    var terminalMapIndex = buildTerminalMapIndex(terminalMappingRows);
+    var masterListIndex = buildMasterListIndex(masterListRows);
     var omsRows = normalizeOmsRows(omsRowsRaw);
 
     var unmatchedMerchants = [];
     var unmatchedCardTypeCount = 0;
 
     var processed = omsRows.map(function(row){
-      var midKey = norm(row.merchantId);
-      var merchantMatched = merchantMap.has(midKey) && String(row.merchantId || "").trim() !== "";
-      var merchant = merchantMatched ? merchantMap.get(midKey) : "";
-      if (!merchantMatched) unmatchedMerchants.push(row);
+      var res = resolveMerchant(row, terminalMapIndex, masterListIndex);
+      if (!res.merchantMatched) unmatchedMerchants.push(row);
 
       var cardKey = norm(row.cardTypeOnOff);
       var cardHit = cardTypeMap.get(cardKey);
@@ -589,7 +750,7 @@
         merchantId: row.merchantId,
         location: row.location,
         terminalId: row.terminalId,
-        merchant: merchant,
+        merchant: res.merchant,
         transactionType: row.transactionType,
         transactionDate: row.transactionDate,
         transactionTime: row.transactionTime,
@@ -606,11 +767,200 @@
         approvedCode: row.approvedCode,
         invoiceNo: row.invoiceNo,
         textMessage: row.textMessage,
-        merchantMatched: merchantMatched
+        merchantMatched: res.merchantMatched,
+        _accountCode: res.accountCode,
+        _merchantKey: res.merchantKey,
+        _masterListEntry: res.masterListEntry,
+        _terminalMatched: res.terminalMatched
       };
     });
 
     return { processed: processed, unmatchedMerchants: unmatchedMerchants, unmatchedCardTypeCount: unmatchedCardTypeCount };
+  }
+
+  /* ---------------- payout report ---------------- */
+  // Verified against a real Daily Payout report + its underlying Process Raw Details (3,707 rows):
+  //  - Gross Collection = SUM(Gross Amount) over Transaction Type = "Sale" only, for this merchant line
+  //    and payment group (Card Type 2, matched to a Card_Types row).
+  //  - Cleared Txn = COUNT of those Sale rows.
+  //  - Refund = SUM(ABS(Gross Amount)) over every non-Sale row (Refund, Dispute, ...) in the group.
+  //  - Bank Fee = ROUND(Gross Collection * Bank Rate, 2); Bank Rate = Bank_Cost row (by Cost ID) at the
+  //    group's Cost Table Column.
+  //  - Noqoody Charge = ROUND(Gross Collection * Merchant Rate, 2); Merchant Rate = Master_List row at
+  //    the group's Master List Rate Column.
+  //  - Below Amount Rule splits a merchant's transactions (across every payment group together) into a
+  //    second report line for Gross Amount < threshold; only that line carries a per-transaction charge
+  //    (Cleared Txn * Rate Per Trnx). Gain For Bank Charge and Payout Processing Fee apply once, on the
+  //    primary (>= threshold) line only.
+  //  - Noqoody Profit = ROUND(Noqoody Charge + Noqoody Charge Per Txn - Bank Fee - Refund, 2).
+  //  - Internal Transfer = ROUND(Gross Collection - Noqoody Charge - Noqoody Charge Per Txn - Refund, 2).
+  // Actual Bank Charges, Rent and Portal Amount are external reconciliation figures (bank statement /
+  // payout portal) that don't exist in any uploaded sheet — they're manual inputs, defaulting to 0.
+  function computePaymentGroupCell(rows, masterEntry, pg, isBelow, bankCostIndex){
+    var groupRows = rows.filter(function(r){ return norm(r.cardType2) === norm(pg.name); });
+    var saleRows = groupRows.filter(function(r){ return norm(r.transactionType) === "sale"; });
+    var otherRows = groupRows.filter(function(r){ return norm(r.transactionType) !== "sale"; });
+
+    var gross = round2(sumBy(saleRows, function(r){ return toNumber(r.grossAmount); }));
+    var clearedTxn = saleRows.length;
+    var refund = round2(sumBy(otherRows, function(r){ return Math.abs(toNumber(r.grossAmount)); }));
+
+    var merchantRate = masterEntry && pg.masterListRateColumn ? toRate(getByNormalizedKey(masterEntry.raw, pg.masterListRateColumn)) : 0;
+    var bankCostRow = masterEntry ? bankCostIndex.get(norm(masterEntry.costId)) : null;
+    var bankRate = bankCostRow && pg.costTableColumn ? toRate(getByNormalizedKey(bankCostRow, pg.costTableColumn)) : 0;
+
+    var bankFee = round2(gross * bankRate);
+    var noqoodyCharge = round2(gross * merchantRate);
+    var ratePerTxn = (isBelow && masterEntry) ? masterEntry.ratePerTrnx : 0;
+    var noqoodyChargePerTxn = round2(clearedTxn * ratePerTxn);
+    var profit = round2(noqoodyCharge + noqoodyChargePerTxn - bankFee - refund);
+    var internalTransfer = round2(gross - noqoodyCharge - noqoodyChargePerTxn - refund);
+
+    return {
+      name: pg.name, gross: gross, bankRate: bankRate, bankFee: bankFee, merchantRate: merchantRate,
+      noqoodyCharge: noqoodyCharge, clearedTxn: clearedTxn, ratePerTxn: ratePerTxn,
+      noqoodyChargePerTxn: noqoodyChargePerTxn, refund: refund, profit: profit, internalTransfer: internalTransfer
+    };
+  }
+
+  function buildMerchantLine(g, rows, isBelow, threshold, bankCostIndex, paymentGroups, manualInputs){
+    var id = norm(g.mid) + "|" + norm(g.merchantKey) + (isBelow ? "|below" : "|main");
+    var groups = paymentGroups.map(function(pg){
+      return computePaymentGroupCell(rows, g.masterEntry, pg, isBelow, bankCostIndex);
+    });
+    var totalProfit = round2(sumBy(groups, function(c){ return c.profit; }));
+    var totalBankFee = round2(sumBy(groups, function(c){ return c.bankFee; }));
+    var totalInternalTransfer = round2(sumBy(groups, function(c){ return c.internalTransfer; }));
+
+    var manual = manualInputs[id] || { actualBankCharges: 0, rent: 0, portalAmount: 0 };
+    var gain = (!isBelow && g.masterEntry) ? g.masterEntry.gainForBankCharge : 0;
+    var fee = (!isBelow && g.masterEntry) ? g.masterEntry.payoutProcessingFee : 0;
+
+    var bankDifference = round2(totalBankFee - manual.actualBankCharges);
+    var deductedRentOthers = round2(totalInternalTransfer - manual.rent - gain);
+    var deductedRent = round2(totalInternalTransfer - manual.rent);
+    var merchantPayout = round2(deductedRentOthers - fee);
+
+    return {
+      id: id,
+      mid: g.mid,
+      merchantKey: g.merchantKey,
+      accountCode: g.accountCode,
+      merchantName: g.merchantName,
+      label: g.merchantName + (isBelow ? " | BELOW " + threshold : ""),
+      isBelow: isBelow,
+      txnCount: rows.length,
+      groups: groups,
+      totalProfit: totalProfit,
+      totalBankFee: totalBankFee,
+      actualBankCharges: manual.actualBankCharges,
+      bankDifference: bankDifference,
+      totalInternalTransfer: totalInternalTransfer,
+      rent: manual.rent,
+      gainForBankCharge: gain,
+      deductedRentOthers: deductedRentOthers,
+      deductedRent: deductedRent,
+      payoutProcessingFee: fee,
+      merchantPayout: merchantPayout,
+      portalAmount: isBelow ? null : manual.portalAmount,
+      totalTransfer: null,
+      difference: null
+    };
+  }
+
+  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs){
+    var merchantGroups = new Map();
+    processed.forEach(function(row){
+      if (!row.merchantMatched) return;
+      var key = norm(row.merchantId) + "|" + norm(row._merchantKey);
+      if (!merchantGroups.has(key)){
+        merchantGroups.set(key, {
+          mid: row.merchantId,
+          merchantKey: row._merchantKey,
+          merchantName: row.merchant,
+          accountCode: row._accountCode && String(row._accountCode).trim() !== "" ? row._accountCode : "(unassigned)",
+          masterEntry: row._masterListEntry,
+          rows: []
+        });
+      }
+      merchantGroups.get(key).rows.push(row);
+    });
+
+    var merchantLines = [];
+    merchantGroups.forEach(function(g){
+      var threshold = g.masterEntry ? g.masterEntry.belowAmountRule : 0;
+      var mainRows = threshold > 0 ? g.rows.filter(function(r){ return toNumber(r.grossAmount) >= threshold; }) : g.rows;
+      var belowRows = threshold > 0 ? g.rows.filter(function(r){ return toNumber(r.grossAmount) < threshold; }) : [];
+
+      var mainLine = buildMerchantLine(g, mainRows, false, threshold, bankCostIndex, paymentGroups, manualInputs);
+      var belowLine = belowRows.length ? buildMerchantLine(g, belowRows, true, threshold, bankCostIndex, paymentGroups, manualInputs) : null;
+
+      mainLine.totalTransfer = round2(mainLine.merchantPayout + (belowLine ? belowLine.merchantPayout : 0));
+      mainLine.difference = round2(mainLine.totalTransfer - mainLine.portalAmount);
+
+      merchantLines.push(mainLine);
+      if (belowLine) merchantLines.push(belowLine);
+    });
+
+    var byAccountCode = new Map();
+    merchantLines.forEach(function(line){
+      if (!byAccountCode.has(line.accountCode)) byAccountCode.set(line.accountCode, []);
+      byAccountCode.get(line.accountCode).push(line);
+    });
+    var accountCodes = Array.from(byAccountCode.keys()).sort(function(a, b){
+      var an = Number(a), bn = Number(b);
+      if (!isNaN(an) && !isNaN(bn)) return an - bn;
+      return String(a).localeCompare(String(b));
+    });
+
+    function sumLines(lines, pick){ return round2(sumBy(lines, pick)); }
+    function subtotalOf(lines){
+      var groups = paymentGroups.map(function(pg, i){
+        return {
+          name: pg.name,
+          gross: sumLines(lines, function(l){ return l.groups[i].gross; }),
+          bankFee: sumLines(lines, function(l){ return l.groups[i].bankFee; }),
+          noqoodyCharge: sumLines(lines, function(l){ return l.groups[i].noqoodyCharge; }),
+          clearedTxn: sumBy(lines, function(l){ return l.groups[i].clearedTxn; }),
+          noqoodyChargePerTxn: sumLines(lines, function(l){ return l.groups[i].noqoodyChargePerTxn; }),
+          refund: sumLines(lines, function(l){ return l.groups[i].refund; }),
+          profit: sumLines(lines, function(l){ return l.groups[i].profit; }),
+          internalTransfer: sumLines(lines, function(l){ return l.groups[i].internalTransfer; })
+        };
+      });
+      return {
+        groups: groups,
+        totalProfit: sumLines(lines, function(l){ return l.totalProfit; }),
+        totalBankFee: sumLines(lines, function(l){ return l.totalBankFee; }),
+        actualBankCharges: sumLines(lines, function(l){ return l.actualBankCharges; }),
+        bankDifference: sumLines(lines, function(l){ return l.bankDifference; }),
+        totalInternalTransfer: sumLines(lines, function(l){ return l.totalInternalTransfer; }),
+        rent: sumLines(lines, function(l){ return l.rent; }),
+        gainForBankCharge: sumLines(lines, function(l){ return l.gainForBankCharge; }),
+        deductedRentOthers: sumLines(lines, function(l){ return l.deductedRentOthers; }),
+        deductedRent: sumLines(lines, function(l){ return l.deductedRent; }),
+        payoutProcessingFee: sumLines(lines, function(l){ return l.payoutProcessingFee; }),
+        merchantPayout: sumLines(lines, function(l){ return l.merchantPayout; }),
+        totalTransfer: sumLines(lines, function(l){ return l.totalTransfer || 0; }),
+        portalAmount: sumLines(lines, function(l){ return l.portalAmount || 0; }),
+        difference: sumLines(lines, function(l){ return l.difference || 0; })
+      };
+    }
+
+    var accountCodeGroups = accountCodes.map(function(code){
+      var lines = byAccountCode.get(code);
+      return { accountCode: code, lines: lines, subtotal: subtotalOf(lines) };
+    });
+    var grandTotal = subtotalOf(merchantLines);
+    var unresolvedCount = processed.length - sumBy(merchantLines, function(l){ return l.txnCount; });
+
+    return {
+      paymentGroups: paymentGroups,
+      accountCodeGroups: accountCodeGroups,
+      merchantLines: merchantLines,
+      grandTotal: grandTotal,
+      unresolvedCount: unresolvedCount
+    };
   }
 
   /* ---------------- DOM wiring ---------------- */
@@ -629,7 +979,11 @@
     step3: document.getElementById("step3"),
     pipelineList: document.getElementById("pipelineList"),
     resultsPanel: document.getElementById("resultsPanel"),
-    emptyState: document.getElementById("emptyState")
+    emptyState: document.getElementById("emptyState"),
+    payoutReportPanel: document.getElementById("payoutReportPanel"),
+    generateReportBtn: document.getElementById("generateReportBtn"),
+    downloadReportBtn: document.getElementById("downloadReportBtn"),
+    payoutReportBody: document.getElementById("payoutReportBody")
   };
 
   function renderMasterFileList(){
@@ -807,9 +1161,15 @@
         prev.classList.remove("active"); prev.classList.add("done");
       }
       if (i >= order.length){
-        var result = runPipeline(state.masterListRows, state.cardTypeMatrix, state.omsFile.rows);
+        var result = runPipeline(state.masterListRows, state.cardTypeMatrix, state.omsFile.rows, state.terminalMappingRows);
         state.result = result;
+        state.payoutReport = null;
+        state.manualInputs = {};
         renderResults(result);
+        els.payoutReportPanel.hidden = false;
+        els.payoutReportBody.innerHTML = "";
+        els.downloadReportBtn.hidden = true;
+        els.generateReportBtn.hidden = false;
         els.processBtn.disabled = false;
         els.processBtn.textContent = "Process Payout";
         updateProcessAvailability();
@@ -1005,6 +1365,267 @@
       alert("Could not save the file: " + (err && err.message ? err.message : "unknown error"));
     });
   }
+
+  /* ---------------- payout report: rendering ---------------- */
+  var GROUP_SUBCOLS = [
+    { key: "gross", label: "Gross Collection", num: true },
+    { key: "bankRate", label: "Bank Rate", pct: true },
+    { key: "bankFee", label: "Bank Fee", num: true },
+    { key: "merchantRate", label: "Merchant Rate", pct: true },
+    { key: "noqoodyCharge", label: "Noqoody Charge", num: true },
+    { key: "clearedTxn", label: "Cleared Txn", num: true },
+    { key: "ratePerTxn", label: "Merchant Rate/Txn", num: true },
+    { key: "noqoodyChargePerTxn", label: "Noqoody Charge/Txn", num: true },
+    { key: "refund", label: "Refund", num: true },
+    { key: "profit", label: "Noqoody Profit", num: true },
+    { key: "internalTransfer", label: "Internal Transfer", num: true }
+  ];
+  var RECON_COLS = [
+    { key: "totalProfit", label: "Total Noqoody Profit", num: true },
+    { key: "totalBankFee", label: "Bank Charges", num: true },
+    { key: "actualBankCharges", label: "Actual Bank Charges", num: true, editable: true, field: "actualBankCharges" },
+    { key: "bankDifference", label: "Bank Difference", num: true },
+    { key: "totalInternalTransfer", label: "Total Internal Transfer", num: true },
+    { key: "rent", label: "Rent", num: true, editable: true, field: "rent" },
+    { key: "gainForBankCharge", label: "Gain For Bank Charges", num: true },
+    { key: "deductedRentOthers", label: "Transfer Deducted (Rent, Others)", num: true },
+    { key: "deductedRent", label: "Transfer Deducted (Rent)", num: true },
+    { key: "payoutProcessingFee", label: "Payout Processing Fee", num: true },
+    { key: "merchantPayout", label: "Merchant Payout", num: true }
+  ];
+  var FINAL_COLS = [
+    { key: "totalTransfer", label: "Total Transfer", num: true },
+    { key: "portalAmount", label: "Portal Amount", num: true, editable: true, field: "portalAmount" },
+    { key: "difference", label: "Difference", num: true }
+  ];
+
+  function fmtPct(v){ return (v || v === 0) ? (round2(v * 100)) + "%" : ""; }
+
+  function recomputeAndRenderPayoutReport(){
+    var bankCostIndex = buildBankCostIndex(state.bankCostRows);
+    var paymentGroups = buildPaymentGroups(state.cardTypesRows);
+    state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs);
+    renderPayoutReport(state.payoutReport);
+  }
+
+  els.generateReportBtn.addEventListener("click", function(){
+    if (!state.cardTypesRows || !state.cardTypesRows.length){
+      alert("Upload a Master List workbook with a Card_Types sheet first — it defines which payment groups this report calculates (Credit Card, Debit Card, Himyan, ...).");
+      return;
+    }
+    recomputeAndRenderPayoutReport();
+    els.generateReportBtn.hidden = true;
+    els.downloadReportBtn.hidden = false;
+  });
+
+  function reconRow(label, line, isSubtotal){
+    var tds = "";
+    RECON_COLS.concat(FINAL_COLS).forEach(function(col){
+      tds += reconCellHtml(col, line, isSubtotal);
+    });
+    return tds;
+  }
+
+  function reconCellHtml(col, line, isSubtotal){
+    var v = line[col.key];
+    if (v === null || v === undefined) return "<td class=\"num\"></td>";
+    if (col.editable && !isSubtotal){
+      return '<td class="num"><input type="number" step="0.01" class="report-input" data-line="' + escapeHtml(line.id) + '" data-field="' + col.field + '" value="' + v + '"></td>';
+    }
+    return '<td class="num">' + fmtAmount(v) + "</td>";
+  }
+
+  function groupCellsHtml(groups, isSubtotal){
+    var html = "";
+    groups.forEach(function(g){
+      GROUP_SUBCOLS.forEach(function(col){
+        var v = g[col.key];
+        if (v === 0 && col.key !== "clearedTxn") { html += '<td class="num muted">0</td>'; return; }
+        html += '<td class="num">' + (col.pct ? fmtPct(v) : fmtAmount(v)) + "</td>";
+      });
+    });
+    return html;
+  }
+
+  function renderPayoutReport(report){
+    var body = els.payoutReportBody;
+    body.innerHTML = "";
+
+    if (!report.accountCodeGroups.length){
+      body.innerHTML = '<div class="banner warn" style="margin:16px 20px;">No transactions resolved to a Master_List configuration row (via Terminal_Mapping + Merchant Key), so there is nothing to report yet. Check the Process Raw Details match-status column above.</div>';
+      return;
+    }
+
+    var notice = document.createElement("div");
+    notice.className = "banner warn";
+    notice.style.margin = "16px 20px";
+    notice.innerHTML =
+      "This report groups by Card Type 2 (payment group) and applies the Master_List / Terminal_Mapping / Bank_Cost / Card_Types connections and the Below Amount Rule split. Not yet implemented, so treated as 0 / unused: " +
+      "<strong>Special_Rate</strong> overrides for Account Code 5, and <strong>Wallet Classification / Classification</strong> (kept pending, and confirmed not to affect this report's grouping in the reference sample). " +
+      "<strong>Actual Bank Charges</strong>, <strong>Rent</strong> and <strong>Portal Amount</strong> come from your bank statement / payout portal, not from any uploaded sheet — enter them per merchant below; everything downstream recalculates live." +
+      (report.unresolvedCount > 0 ? ("<br>" + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row and are excluded from this report.") : "");
+    body.appendChild(notice);
+
+    var summary = document.createElement("div");
+    summary.className = "summary-grid";
+    summary.style.margin = "0 20px 16px";
+    summary.innerHTML =
+      statTile(report.merchantLines.length, "Report Lines", "") +
+      statTile(fmtAmount(report.grandTotal.totalProfit), "Total Noqoody Profit", "ok") +
+      statTile(fmtAmount(report.grandTotal.merchantPayout), "Total Merchant Payout", "ok") +
+      statTile(fmtAmount(report.grandTotal.totalTransfer), "Total Transfer", "");
+    body.appendChild(summary);
+
+    var scroll = document.createElement("div");
+    scroll.className = "table-scroll";
+    var table = document.createElement("table");
+
+    var thead = document.createElement("thead");
+    var groupRow = document.createElement("tr");
+    groupRow.innerHTML = "<th></th><th></th><th></th>" +
+      report.paymentGroups.map(function(pg){ return '<th colspan="' + GROUP_SUBCOLS.length + '">' + escapeHtml(pg.name.toUpperCase()) + "</th>"; }).join("") +
+      '<th colspan="' + RECON_COLS.length + '">FINAL RECONCILIATION</th>' +
+      '<th colspan="' + FINAL_COLS.length + '">TRANSFER</th>';
+    thead.appendChild(groupRow);
+
+    var headRow = document.createElement("tr");
+    var headHtml = "<th>Account Code</th><th>MID</th><th>Merchant</th>";
+    report.paymentGroups.forEach(function(){
+      GROUP_SUBCOLS.forEach(function(col){ headHtml += "<th>" + escapeHtml(col.label) + "</th>"; });
+    });
+    RECON_COLS.concat(FINAL_COLS).forEach(function(col){ headHtml += "<th>" + escapeHtml(col.label) + "</th>"; });
+    headRow.innerHTML = headHtml;
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    var tbody = document.createElement("tbody");
+    report.accountCodeGroups.forEach(function(group){
+      group.lines.forEach(function(line){
+        var tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + escapeHtml(line.accountCode) + "</td>" +
+          "<td>" + escapeHtml(line.mid) + "</td>" +
+          "<td>" + escapeHtml(line.label) + "</td>" +
+          groupCellsHtml(line.groups, false) +
+          reconRow(line.label, line, false);
+        tbody.appendChild(tr);
+      });
+      var subTr = document.createElement("tr");
+      subTr.className = "unmatched";
+      subTr.style.background = "var(--surface-2)";
+      subTr.style.fontWeight = "600";
+      subTr.innerHTML =
+        '<td colspan="3">SUBTOTAL — Account Code ' + escapeHtml(group.accountCode) + "</td>" +
+        groupCellsHtml(group.subtotal.groups, true) +
+        reconRow("", group.subtotal, true);
+      tbody.appendChild(subTr);
+    });
+
+    var grandTr = document.createElement("tr");
+    grandTr.style.background = "var(--accent-soft)";
+    grandTr.style.fontWeight = "700";
+    grandTr.innerHTML =
+      '<td colspan="3">GRAND TOTAL — ALL ACCOUNT CODES</td>' +
+      groupCellsHtml(report.grandTotal.groups, true) +
+      reconRow("", report.grandTotal, true);
+    tbody.appendChild(grandTr);
+
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    body.appendChild(scroll);
+
+    Array.prototype.forEach.call(body.querySelectorAll(".report-input"), function(input){
+      input.addEventListener("change", function(){
+        var lineId = input.dataset.line;
+        var field = input.dataset.field;
+        var val = toNumber(input.value);
+        if (!state.manualInputs[lineId]) state.manualInputs[lineId] = { actualBankCharges: 0, rent: 0, portalAmount: 0 };
+        state.manualInputs[lineId][field] = val;
+        recomputeAndRenderPayoutReport();
+      });
+    });
+  }
+
+  function downloadPayoutReport(){
+    var report = state.payoutReport;
+    var freq = state.frequency || "Daily";
+    var sheetName = (freq === "Weekly" ? "WEEKLY" : "DAILY") + " PAYOUT";
+
+    var rows = [];
+    var groupHeader = ["", "", ""];
+    report.paymentGroups.forEach(function(pg){
+      groupHeader.push(pg.name.toUpperCase());
+      for (var i = 1; i < GROUP_SUBCOLS.length; i++) groupHeader.push("");
+    });
+    groupHeader.push("FINAL RECONCILIATION");
+    for (var i = 1; i < RECON_COLS.length; i++) groupHeader.push("");
+    groupHeader.push("TRANSFER");
+    for (var i = 1; i < FINAL_COLS.length; i++) groupHeader.push("");
+    rows.push(groupHeader);
+
+    var colHeader = ["Account Code", "MID", "Merchant"];
+    report.paymentGroups.forEach(function(){ GROUP_SUBCOLS.forEach(function(c){ colHeader.push(c.label); }); });
+    RECON_COLS.concat(FINAL_COLS).forEach(function(c){ colHeader.push(c.label); });
+    rows.push(colHeader);
+
+    function lineToRow(prefix, line, groups, recon){
+      var row = prefix.slice();
+      groups.forEach(function(g){
+        GROUP_SUBCOLS.forEach(function(c){ row.push(c.pct ? g[c.key] : g[c.key]); });
+      });
+      RECON_COLS.concat(FINAL_COLS).forEach(function(c){
+        var v = recon[c.key];
+        row.push(v === null || v === undefined ? "" : v);
+      });
+      return row;
+    }
+
+    report.accountCodeGroups.forEach(function(group){
+      group.lines.forEach(function(line){
+        rows.push(lineToRow([line.accountCode, line.mid, line.label], line, line.groups, line));
+      });
+      rows.push(lineToRow(["", "", "SUBTOTAL — Account Code " + group.accountCode], null, group.subtotal.groups, group.subtotal));
+    });
+    rows.push(lineToRow(["", "", "GRAND TOTAL — ALL ACCOUNT CODES"], null, report.grandTotal.groups, report.grandTotal));
+
+    var reportSheet = XLSX.utils.aoa_to_sheet(rows);
+    var prdExportRows = state.result.processed.map(function(row){
+      var out = {};
+      COLUMNS.forEach(function(col){ out[col.label] = row[col.key]; });
+      out["Match Status"] = row.merchantMatched ? "Matched" : "Unmatched MID";
+      return out;
+    });
+    var prdSheet = XLSX.utils.json_to_sheet(prdExportRows, { header: COLUMNS.map(function(c){ return c.label; }).concat(["Match Status"]) });
+
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, reportSheet, sheetName);
+    XLSX.utils.book_append_sheet(wb, prdSheet, "Process Raw Details");
+    var arrayBuf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+    var blob = new Blob([arrayBuf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+
+    var dateStr = modePostingDate(state.result.processed);
+    var filename = "Payout_Report_" + freq + "_" + dateStr + ".xlsx";
+
+    if (!downloadsApi) {
+      alert("Downloads aren't available in this preview. Filename would be: " + filename);
+      return;
+    }
+    var btn = els.downloadReportBtn;
+    btn.disabled = true;
+    var original = btn.textContent;
+    btn.textContent = "Saving…";
+    downloadsApi.save({ filename: filename, data: blob }).then(function(){
+      btn.textContent = "Saved ✓";
+      setTimeout(function(){ btn.textContent = original; btn.disabled = false; }, 1600);
+    }).catch(function(err){
+      btn.disabled = false;
+      btn.textContent = original;
+      if (err && err.code === "declined") return;
+      alert("Could not save the file: " + (err && err.message ? err.message : "unknown error"));
+    });
+  }
+
+  els.downloadReportBtn.addEventListener("click", downloadPayoutReport);
 
   updateStepStates();
 })();
