@@ -924,8 +924,13 @@
       }
     });
 
+    // Merchants are ordered A–Z by name, and a merchant's main and below-threshold rows are built
+    // consecutively, so they stay together under that merchant wherever the report is grouped.
     var merchantLines = [];
-    merchantGroups.forEach(function(g){
+    var sortedGroups = Array.from(merchantGroups.values()).sort(function(a, b){
+      return String(a.merchantName || "").localeCompare(String(b.merchantName || ""), undefined, { sensitivity: "base" });
+    });
+    sortedGroups.forEach(function(g){
       var threshold = g.masterEntry ? g.masterEntry.belowAmountRule : 0;
       var mainRows = threshold > 0 ? g.rows.filter(function(r){ return toNumber(r.grossAmount) >= threshold; }) : g.rows;
       var belowRows = threshold > 0 ? g.rows.filter(function(r){ return toNumber(r.grossAmount) < threshold; }) : [];
@@ -949,6 +954,16 @@
       var an = Number(a), bn = Number(b);
       if (!isNaN(an) && !isNaN(bn)) return an - bn;
       return String(a).localeCompare(String(b));
+    });
+
+    // "No." identifies a merchant, not a row: it advances once per merchant and a below-threshold
+    // row carries the same number as the main row it belongs to.
+    byAccountCode.forEach(function(lines){
+      var no = 0;
+      lines.forEach(function(line){
+        if (!line.isBelow) no++;
+        line.no = no;
+      });
     });
 
     function sumLines(lines, pick){ return round2(sumBy(lines, pick)); }
@@ -1597,12 +1612,10 @@
       labelTr.innerHTML = '<td colspan="' + totalCols + '">Account Code ' + escapeHtml(group.accountCode) + "</td>";
       tbody.appendChild(labelTr);
 
-      var lineNo = 0;
       group.lines.forEach(function(line){
-        lineNo++;
         var tr = document.createElement("tr");
         tr.innerHTML =
-          stickyTd(String(lineNo), 0) +
+          stickyTd(String(line.no), 0) +
           stickyTd(escapeHtml(line.mid), 1) +
           stickyTd(escapeHtml(line.label), 2) +
           groupCellsHtml(line.groups, false) +
@@ -1792,12 +1805,10 @@
       var colHeaderRowIdx = pushRow(buildColHeaderRow(), 0);
       colHeaderRowIdxs.push(colHeaderRowIdx);
 
-      var lineNo = 0;
       var sectionDataRows = [];
       var mainRowSpans = []; // {mainRowIdx, lastRowIdx} — a merchant's main row plus its below-threshold row
       group.lines.forEach(function(line){
-        lineNo++;
-        var idx = pushRow(lineToRow([lineNo, line.mid, line.label], line.groups, line), 1);
+        var idx = pushRow(lineToRow([line.no, line.mid, line.label], line.groups, line), 1);
         sectionDataRows.push(idx);
         if (line.isBelow && mainRowSpans.length) mainRowSpans[mainRowSpans.length - 1].lastRowIdx = idx;
         else mainRowSpans.push({ mainRowIdx: idx, lastRowIdx: idx });

@@ -61,7 +61,7 @@ The user supplied a real Daily Payout Excel file (format only, one sheet). Revie
 - **Two header colors were wrong**, corrected by reading the actual fill values out of the reference file's `styles.xml` rather than computing them: Noqoody Charge is `B4C6E7` (not the computed `95B3D7`), Noqoody Profit is `C6E0B4` (not the computed `C3D69B`). The other four (Input `FFCC99`, Good `C6EFCE`, Bad `FFC7CE`, Neutral `FFEB9C`) were already exact. Header text in the reference isn't bold — removed the forced bold too.
 - **Freeze panes are real and now implemented.** The reference file freezes exactly the first 3 columns (No./MID/Merchant) — `xSplit="3"`, no row freeze at all (no `ySplit`, so no sticky header row in the Excel file itself). This reverses what was reported as a hard library limitation: neither SheetJS build exposes a freeze-pane *write API*, but the file format itself supports it fine, so `downloadPayoutReport` now patches it in directly — generate the workbook normally, unzip the result in-memory with JSZip, replace the one `<sheetViews>` element in the report sheet's XML with a hardcoded frozen-pane block, rezip. Falls back silently to the unpatched file if JSZip isn't available or the patch fails, so this can never block a download. Verified round-trip: the patched file re-opens cleanly and the pane survives.
 
-Not addressed by this pass (no reference data covers it): the exact sort order of merchant rows within an Account Code section — the reference file's order doesn't obviously match ours (insertion order from the transaction stream) and no sort rule has been specified.
+The merchant row order within an Account Code section was left open by this pass and resolved later — see "Merchant sorting, numbering and the Below Amount row" below.
 
 ### Follow-up: two export bugs found in the generated file
 
@@ -129,3 +129,12 @@ No sample files on hand? Use **"Load example data to try it out"** on the left r
 ## Deliberately out of scope for Phase 1
 
 Wallet Classification and Classification are displayed as columns with a **rule pending** marker — the lookup source for these hasn't been defined yet, so no rule is invented. Everything else in the later-phase list (rate lookups, fees, refund/profit calculation, final report layout, etc.) is likewise not implemented yet; see the project spec for the full phase breakdown.
+
+## Merchant sorting, numbering and the Below Amount row
+
+- **Sorting**: merchants are ordered A–Z by Merchant Name. The sort happens at merchant level before report lines are built, so a merchant's main row and its Below Amount row stay together, and Card Type sections (which are column blocks, not rows) are never reordered independently. With the real dataset this reproduces the reference export's own row order exactly.
+- **Numbering**: the `No.` column identifies a *merchant*, not a row. It advances once per merchant and resets per Account Code section; a Below Amount row carries the same number as the main row it belongs to (e.g. `1 MADHURA RESTAURANT` / `1 MADHURA RESTAURANT | BELOW 25` / `2 NEW BALANCE DOHA`).
+- **Below Amount row display**: a Below Amount row is created only when at least one transaction actually satisfies `Gross Amount < Below Amount Rule` — never merely because the merchant has a rule configured. The comparison is strict, so a Gross Amount exactly equal to the threshold is *not* below it. The main row always remains visible.
+- **Below Amount calculation** (unchanged, re-verified): `Noqoody Charge Per Txn` is `0` on the main row and `Cleared Txn × Merchant Rate Per Txn` on the Below Amount row, and flows into that row's Noqoody Profit and Internal Transfer.
+
+Verified in both the web app and the exported workbook (identical order and numbering in each), with a targeted negative test: a merchant with a Below Amount Rule of 25 whose transactions are all exactly 25 produces no Below Amount row anywhere, while its main row still appears. All 1,726 exported formulas still evaluate to their cached values after the reorder, and the column widths, outline toggles, freeze pane and number formats remain intact.
