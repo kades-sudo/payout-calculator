@@ -102,7 +102,7 @@
   .file-chip button:hover{ color:var(--danger); }
 
   .sheet-check{ font-size:12px; display:flex; gap:6px; align-items:baseline; }
-  .sheet-check.ok{ color:var(--ok); } .sheet-check.bad{ color:var(--danger); }
+  .sheet-check.ok{ color:var(--ok); } .sheet-check.bad{ color:var(--danger); } .sheet-check.muted{ color:var(--ink-muted); }
 
   .freq-group{ display:flex; gap:8px; }
   .freq-btn{
@@ -225,9 +225,9 @@
 
 <div class="app">
   <header class="page-head">
-    <span class="eyebrow">Phase 1 · Process Raw Details</span>
+    <span class="eyebrow">Phase 1–2 · Process Raw Details &amp; Master List Ingestion</span>
     <h1>Payout Calculator</h1>
-    <p class="subtitle">Upload the master list, choose a payout frequency, and drop in the OMS raw transaction export. Processing — card type lookup, card type 2 lookup, and merchant matching — runs automatically the moment you click Process Payout.</p>
+    <p class="subtitle">Upload the master list, choose a payout frequency, and drop in the OMS raw transaction export. Processing — card type lookup, card type 2 lookup, and merchant matching — runs automatically the moment you click Process Payout. The uploaded workbook's full set of configuration sheets is now recognized automatically by name.</p>
   </header>
 
   <div class="layout">
@@ -237,7 +237,7 @@
         <div class="step-badge">1</div>
         <div class="step-body">
           <div class="step-title">Upload Master List / Configuration</div>
-          <div class="step-hint">Workbook(s) containing a <strong>Master_List</strong> sheet (MID → Merchant Name) and a <strong>Card Type Classification</strong> sheet.</div>
+          <div class="step-hint">Workbook(s) may contain <strong>Master_List</strong>, <strong>Terminal_Mapping</strong>, <strong>Card Type Classification</strong>, <strong>Bank_Cost</strong>, <strong>Special_Rate</strong> and <strong>Card_Types</strong> sheets — matched automatically by fuzzy name. Only Master_List and Card Type Classification are required for this phase.</div>
           <label class="file-drop" for="masterFiles">
             <input type="file" id="masterFiles" accept=".xlsx,.xls,.csv" multiple>
             Click to upload workbook(s) (.xlsx)
@@ -302,7 +302,7 @@
     </div>
   </div>
 
-  <footer>Phase 1 scope: card type &amp; merchant lookups, Process Raw Details generation and verification download. Wallet Classification, Classification and payout calculation follow in later phases.</footer>
+  <footer>Phase 1: card type &amp; merchant lookups, Process Raw Details generation and verification download. Phase 2 (in progress): full Master List workbook ingestion — Terminal_Mapping, Bank_Cost, Special_Rate and Card_Types are now recognized and parsed. Wallet Classification, Classification, exact matching rules and rate/fee calculation still follow in later phases.</footer>
 </div>
 
 <script>
@@ -312,13 +312,38 @@
   /* ---------------- state ---------------- */
   var state = {
     masterFiles: [],          // [{name, workbook}]
-    masterListRows: null,     // parsed Master_List sheet rows (objects)
-    cardTypeMap: null,        // Map(normalizedKey -> {cardType, cardType2})
+    masterListRows: null,     // parsed Master_List sheet rows (objects), merged across files
+    cardTypeMatrix: null,     // Card Type Classification sheet as array-of-arrays (header row first)
+    terminalMappingRows: null,
+    bankCostRows: null,
+    specialRateRows: null,
+    cardTypesRows: null,
     frequency: null,
     omsFile: null,            // {name, rows}
     isSample: false,
     result: null              // {processed, unmatchedMerchants, unmatchedCardTypeCount}
   };
+
+  // Up to 7 configuration sheets, resolved by fuzzy name match (case/space/punctuation-insensitive).
+  // master_list is merged across every uploaded workbook (Daily + Weekly lists may ship separately);
+  // the rest use the first match found, in upload order.
+  var SHEET_ALIASES = {
+    master_list: ["masterlist"],
+    terminal_mapping: ["terminalmapping", "tidmapping", "terminalmap"],
+    card_type_classification: ["cardtypeclassification", "cardclassification", "paymentgroupclassification"],
+    bank_cost: ["bankcost", "bankcosttable"],
+    special_rate: ["specialrate", "specialrates"],
+    card_types: ["cardtypes", "paymentgroups"]
+  };
+  var SHEET_LABELS = {
+    master_list: "Master_List",
+    terminal_mapping: "Terminal_Mapping",
+    card_type_classification: "Card Type Classification",
+    bank_cost: "Bank_Cost",
+    special_rate: "Special_Rate",
+    card_types: "Card_Types"
+  };
+  var REQUIRED_SHEETS = { master_list: true, card_type_classification: true };
 
   var downloadsApi = null;
   if (window.claude && window.claude.use) {
@@ -374,6 +399,15 @@
     return null;
   }
 
+  function resolveIndex(headers, candidates){
+    var normHeaders = headers.map(norm);
+    for (var c = 0; c < candidates.length; c++){
+      var idx = normHeaders.indexOf(candidates[c]);
+      if (idx !== -1) return idx;
+    }
+    return -1;
+  }
+
   function findSheet(workbook, nameCandidates){
     for (var i = 0; i < workbook.SheetNames.length; i++){
       var n = norm(workbook.SheetNames[i]);
@@ -420,22 +454,41 @@
   /* ---------------- sample data ---------------- */
   function sampleWorkbookData(){
     var masterListRows = [
-      { MID: "100234", "Merchant Name": "Sunrise Grocery Mart" },
-      { MID: "100567", "Merchant Name": "Pacific Coffee Roasters" },
-      { MID: "100891", "Merchant Name": "Everwell Pharmacy" },
-      { MID: "101045", "Merchant Name": "Northgate Auto Parts" },
-      { MID: "101322", "Merchant Name": "Blue Harbor Seafood" }
+      { "Merchant Key": "", MID: "100234", "Merchant Name": "Sunrise Grocery Mart", "Payout Frequency": "Daily", "Cost ID": "1", "CC Merchant Rate": "1.85%", "Debit Merchant Rate": "0.50%", Status: "Active" },
+      { "Merchant Key": "", MID: "100567", "Merchant Name": "Pacific Coffee Roasters", "Payout Frequency": "Daily", "Cost ID": "1", "CC Merchant Rate": "1.85%", "Debit Merchant Rate": "0.50%", Status: "Active" },
+      { "Merchant Key": "", MID: "100891", "Merchant Name": "Everwell Pharmacy", "Payout Frequency": "Weekly", "Cost ID": "2", "CC Merchant Rate": "1.65%", "Debit Merchant Rate": "0.50%", Status: "Active" },
+      { "Merchant Key": "", MID: "101045", "Merchant Name": "Northgate Auto Parts", "Payout Frequency": "Weekly", "Cost ID": "1", "CC Merchant Rate": "1.85%", "Debit Merchant Rate": "0.50%", Status: "Active" },
+      { "Merchant Key": "", MID: "101322", "Merchant Name": "Blue Harbor Seafood", "Payout Frequency": "Daily", "Cost ID": "1", "CC Merchant Rate": "1.85%", "Debit Merchant Rate": "0.50%", Status: "Active" }
       // 101999 intentionally omitted to demonstrate an unmatched MID
     ];
-    // Card Type Classification: col A = lookup key, C = Card Type 2, E = Card Type (per VLOOKUP A:E / A:C)
+    // Card Type Classification: col A = lookup key ("Card Type"), B = output Card Type ("Card Type 1"),
+    // C = output Card Type 2 ("Card Type 2") — matches the real workbook's column layout.
     var cardTypeMatrix = [
-      ["Lookup Key", "B", "Card Type 2", "D", "Card Type"],
-      ["VISA-ON US", "", "Bank-Issued", "", "Credit Card"],
-      ["MASTERCARD-ON US", "", "Bank-Issued", "", "Credit Card"],
-      ["VISA-OFF US", "", "Non-Bank", "", "Credit Card"],
-      ["MASTERCARD-OFF US", "", "Non-Bank", "", "Credit Card"],
-      ["JCB-ON US", "", "Bank-Issued", "", "Debit Card"],
-      ["UNIONPAY-OFF US", "", "Non-Bank", "", "Debit Card"]
+      ["Card Type", "Card Type 1", "Card Type 2", "Rate | Normal", "Rate | High"],
+      ["VISA-ON US", "Credit Card", "Bank-Issued", "1.85%", "1.25%"],
+      ["MASTERCARD-ON US", "Credit Card", "Bank-Issued", "1.85%", "1.25%"],
+      ["VISA-OFF US", "Credit Card", "Non-Bank", "1.85%", "1.65%"],
+      ["MASTERCARD-OFF US", "Credit Card", "Non-Bank", "1.85%", "1.65%"],
+      ["JCB-ON US", "Debit Card", "Bank-Issued", "0.50%", "0.50%"],
+      ["UNIONPAY-OFF US", "Debit Card", "Non-Bank", "0.50%", "0.50%"]
+    ];
+    var terminalMappingRows = [
+      { "Merchant Key": "", MID: "100234", "Terminal ID": "T-001", Platform: "PAX", "Account Code": "15", Status: "Active" },
+      { "Merchant Key": "", MID: "100567", "Terminal ID": "T-014", Platform: "PAX", "Account Code": "15", Status: "Active" },
+      { "Merchant Key": "", MID: "100891", "Terminal ID": "T-027", Platform: "PAX", "Account Code": "4", Status: "Active" },
+      { "Merchant Key": "", MID: "101045", "Terminal ID": "T-032", Platform: "PAX", "Account Code": "15", Status: "Active" },
+      { "Merchant Key": "", MID: "101322", "Terminal ID": "T-009", Platform: "PAX", "Account Code": "5", Status: "Active" }
+    ];
+    var bankCostRows = [
+      { "Cost ID": "1", "Credit Card": "1.75%", "Debit Card": "0.75%", Note: "Normal" },
+      { "Cost ID": "2", "Credit Card": "1.45%", "Debit Card": "0.70%", Note: "Education Below 50m" }
+    ];
+    var specialRateRows = [
+      { "Account Code": "5", "Credit Card 1.25%": "1.25%", "Credit Card 1.65%": "1.65%", NAPS: "1.50%" }
+    ];
+    var cardTypesRows = [
+      { "Card Type": "Credit Card", "Master List Rate Column": "CC Merchant Rate", "Cost Table Column": "Credit Card", "Entry Source": "OMS Transactions", Order: "1" },
+      { "Card Type": "Debit Card", "Master List Rate Column": "Debit Merchant Rate", "Cost Table Column": "Debit Card", "Entry Source": "OMS Transactions", Order: "2" }
     ];
     var omsRows = [
       { "Reference Number":"REF-88001","Merchant ID":"100234","Location":"Manila","Terminal ID":"T-001","Transaction Type":"Sale","Transaction Date":"2026-09-15","Transaction Time":"09:12","Posting Date":"2026-09-16","Gross Amount":1250.00,"Commission":25.00,"Net Amount":1225.00,"Card Number":"411111******1111","Card Type (On us/Off us)":"VISA-ON US","Approved Code":"A1023","Invoice No":"INV-5001","Text Message":"Approved" },
@@ -445,17 +498,40 @@
       { "Reference Number":"REF-88005","Merchant ID":"101322","Location":"Makati","Terminal ID":"T-009","Transaction Type":"Sale","Transaction Date":"2026-09-15","Transaction Time":"18:55","Posting Date":"2026-09-16","Gross Amount":2100.75,"Commission":42.02,"Net Amount":2058.73,"Card Number":"353011******3005","Card Type (On us/Off us)":"JCB-ON US","Approved Code":"E9012","Invoice No":"INV-5005","Text Message":"Approved" },
       { "Reference Number":"REF-88006","Merchant ID":"101999","Location":"Taguig","Terminal ID":"T-041","Transaction Type":"Sale","Transaction Date":"2026-09-15","Transaction Time":"20:14","Posting Date":"2026-09-16","Gross Amount":475.25,"Commission":9.51,"Net Amount":465.74,"Card Number":"622126******7788","Card Type (On us/Off us)":"UNIONPAY-OFF US","Approved Code":"F2287","Invoice No":"INV-5006","Text Message":"Approved" }
     ];
-    return { masterListRows: masterListRows, cardTypeMatrix: cardTypeMatrix, omsRows: omsRows };
+    return {
+      masterListRows: masterListRows,
+      cardTypeMatrix: cardTypeMatrix,
+      terminalMappingRows: terminalMappingRows,
+      bankCostRows: bankCostRows,
+      specialRateRows: specialRateRows,
+      cardTypesRows: cardTypesRows,
+      omsRows: omsRows
+    };
   }
 
   /* ---------------- pipeline ---------------- */
+  // Card Type Classification sheet layout (verified against a real Master List export):
+  // col A "Card Type" = lookup key, col B "Card Type 1" = output Card Type, col C "Card Type 2" = output Card Type 2.
+  // Header names are matched first; column position (A/B/C) is the fallback for differently-labeled sheets.
   function buildCardTypeMap(matrix){
     var map = new Map();
+    if (!matrix || !matrix.length) return map;
+    var headers = matrix[0] || [];
+    var keyIdx = resolveIndex(headers, ["cardtype", "lookupkey", "cardtypeonusoffus"]);
+    var t1Idx = resolveIndex(headers, ["cardtype1", "paymentgroup"]);
+    var t2Idx = resolveIndex(headers, ["cardtype2"]);
+    if (keyIdx === -1) keyIdx = 0;
+    if (t1Idx === -1) t1Idx = 1;
+    if (t2Idx === -1) t2Idx = 2;
     for (var r = 1; r < matrix.length; r++){
       var row = matrix[r] || [];
-      var key = norm(row[0]);
+      var key = norm(row[keyIdx]);
       if (!key) continue;
-      map.set(key, { cardType: row[4] !== undefined ? row[4] : "", cardType2: row[2] !== undefined ? row[2] : "" });
+      var t1 = row[t1Idx], t2 = row[t2Idx];
+      map.set(key, {
+        cardType: typeof t1 === "string" ? t1.trim() : (t1 !== undefined ? t1 : ""),
+        cardType2: typeof t2 === "string" ? t2.trim() : (t2 !== undefined ? t2 : "")
+      });
     }
     return map;
   }
@@ -571,23 +647,59 @@
 
   function recomputeMasterSheets(){
     renderMasterFileList();
-    var masterSheet = null, cardSheet = null;
+
+    var firstMatch = { terminal_mapping: null, card_type_classification: null, bank_cost: null, special_rate: null, card_types: null };
+    var masterListRowsMerged = [];
+    var masterListFound = false;
+
     for (var i = 0; i < state.masterFiles.length; i++){
       var wb = state.masterFiles[i].workbook;
       if (!wb) continue;
-      if (!masterSheet) masterSheet = findSheet(wb, ["masterlist"]);
-      if (!cardSheet) cardSheet = findSheet(wb, ["cardtypeclassification"]);
+      Object.keys(SHEET_ALIASES).forEach(function(id){
+        if (id === "master_list"){
+          var mSheet = findSheet(wb, SHEET_ALIASES.master_list);
+          if (mSheet){
+            masterListFound = true;
+            masterListRowsMerged = masterListRowsMerged.concat(XLSX.utils.sheet_to_json(mSheet, { defval: "" }));
+          }
+          return;
+        }
+        if (firstMatch[id]) return; // already resolved from an earlier file
+        var sheet = findSheet(wb, SHEET_ALIASES[id]);
+        if (sheet) firstMatch[id] = sheet;
+      });
     }
-    state.masterListRows = masterSheet ? XLSX.utils.sheet_to_json(masterSheet, { defval: "" }) : null;
-    state.cardTypeMatrix = cardSheet ? XLSX.utils.sheet_to_json(cardSheet, { header: 1, defval: "" }) : null;
 
-    var checks = "";
-    if (state.masterFiles.length){
-      checks += '<div class="sheet-check ' + (state.masterListRows ? "ok" : "bad") + '">' + (state.masterListRows ? "✓ Master_List found (" + state.masterListRows.length + " rows)" : "✗ Master_List sheet not found") + '</div>';
-      checks += '<div class="sheet-check ' + (state.cardTypeMatrix ? "ok" : "bad") + '">' + (state.cardTypeMatrix ? "✓ Card Type Classification found (" + (state.cardTypeMatrix.length - 1) + " rows)" : "✗ Card Type Classification sheet not found") + '</div>';
-    }
-    els.sheetChecks.innerHTML = checks;
+    state.masterListRows = masterListFound ? masterListRowsMerged : null;
+    state.cardTypeMatrix = firstMatch.card_type_classification ? XLSX.utils.sheet_to_json(firstMatch.card_type_classification, { header: 1, defval: "" }) : null;
+    state.terminalMappingRows = firstMatch.terminal_mapping ? XLSX.utils.sheet_to_json(firstMatch.terminal_mapping, { defval: "" }) : null;
+    state.bankCostRows = firstMatch.bank_cost ? XLSX.utils.sheet_to_json(firstMatch.bank_cost, { defval: "" }) : null;
+    state.specialRateRows = firstMatch.special_rate ? XLSX.utils.sheet_to_json(firstMatch.special_rate, { defval: "" }) : null;
+    state.cardTypesRows = firstMatch.card_types ? XLSX.utils.sheet_to_json(firstMatch.card_types, { defval: "" }) : null;
+
+    renderSheetChecks();
     updateStepStates();
+  }
+
+  function renderSheetChecks(){
+    if (!state.masterFiles.length){ els.sheetChecks.innerHTML = ""; return; }
+    var rowsById = {
+      master_list: state.masterListRows,
+      card_type_classification: state.cardTypeMatrix ? state.cardTypeMatrix.slice(1) : null,
+      terminal_mapping: state.terminalMappingRows,
+      bank_cost: state.bankCostRows,
+      special_rate: state.specialRateRows,
+      card_types: state.cardTypesRows
+    };
+    els.sheetChecks.innerHTML = Object.keys(SHEET_LABELS).map(function(id){
+      var rows = rowsById[id];
+      var found = !!rows;
+      var required = !!REQUIRED_SHEETS[id];
+      var cls = found ? "ok" : (required ? "bad" : "muted");
+      var mark = found ? "✓" : (required ? "✗" : "–");
+      var detail = found ? " (" + rows.length + " rows)" : (required ? " not found" : " not found (optional this phase)");
+      return '<div class="sheet-check ' + cls + '">' + mark + " " + SHEET_LABELS[id] + detail + "</div>";
+    }).join("");
   }
 
   els.masterFiles.addEventListener("change", function(e){
@@ -639,16 +751,18 @@
 
   els.sampleBtn.addEventListener("click", function(){
     var sample = sampleWorkbookData();
-    state.masterFiles = [{ name: "Master_List_sample.xlsx (example)", workbook: null }];
+    state.masterFiles = [{ name: "Master_List_Config_sample.xlsx (example)", workbook: null }];
     state.masterListRows = sample.masterListRows;
     state.cardTypeMatrix = sample.cardTypeMatrix;
+    state.terminalMappingRows = sample.terminalMappingRows;
+    state.bankCostRows = sample.bankCostRows;
+    state.specialRateRows = sample.specialRateRows;
+    state.cardTypesRows = sample.cardTypesRows;
     state.omsFile = { name: "OMS_Raw_Transactions_sample.xlsx (example)", rows: sample.omsRows };
     state.isSample = true;
     if (!state.frequency) setFrequency("Daily");
     renderMasterFileList();
-    els.sheetChecks.innerHTML =
-      '<div class="sheet-check ok">✓ Master_List found (' + sample.masterListRows.length + ' rows)</div>' +
-      '<div class="sheet-check ok">✓ Card Type Classification found (' + (sample.cardTypeMatrix.length - 1) + ' rows)</div>';
+    renderSheetChecks();
     renderOmsFileList();
     updateStepStates();
   });
