@@ -1647,18 +1647,35 @@
 
   var XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
-  // Neither SheetJS build available to this page writes freeze panes through its public API, but the
-  // file format itself supports it fine — patch it directly into the generated zip's worksheet XML.
-  // Freezes only the first `xSplit` columns (no row freeze), matching a real Daily Payout export's own
-  // <pane> element exactly. Falls back to the unpatched file if JSZip isn't available or the patch
-  // fails for any reason, so this never blocks the download itself.
-  function freezeFirstColumns(arrayBuf, sheetXmlPath, xSplit){
+  // The SheetJS build available to this page can't write two things the report format needs, so both
+  // are patched straight into the generated zip's worksheet XML:
+  //
+  //  1. Freeze panes — freezes the first `xSplit` columns only (no row freeze), matching a real Daily
+  //     Payout export's own <pane> element. No SheetJS build exposes a writer for this.
+  //  2. <sheetFormatPr outlineLevelRow/outlineLevelCol> — Excel uses these to decide whether to draw
+  //     the outline bar with the +/- buttons. Without them the grouped columns and rows are still
+  //     correctly marked, but Excel renders no control to expand them, so the toggles look dead.
+  //     It must sit between <sheetViews> and <cols> to satisfy the schema's element order.
+  //
+  // Two attribute cleanups ride along: the writer emits a `level` attribute that isn't part of CT_Col
+  // (only `outlineLevel` is), and writes `hidden="true"` where Excel's own writer uses `hidden="1"`.
+  // Falls back to the unpatched file if JSZip is unavailable or anything throws, so a patch problem
+  // can never block the download itself.
+  function patchWorksheetForExcel(arrayBuf, sheetXmlPath, xSplit){
     if (typeof JSZip === "undefined") return Promise.resolve(new Blob([arrayBuf], { type: XLSX_MIME }));
     return JSZip.loadAsync(arrayBuf).then(function(zip){
       return zip.file(sheetXmlPath).async("string").then(function(xml){
         var topLeftCell = XLSX.utils.encode_col(xSplit) + "1";
-        var pane = '<sheetViews><sheetView workbookViewId="0"><pane xSplit="' + xSplit + '" topLeftCell="' + topLeftCell + '" activePane="topRight" state="frozen"/><selection pane="topRight"/></sheetView></sheetViews>';
-        var patched = xml.replace(/<sheetViews>.*?<\/sheetViews>/, pane);
+        var head =
+          '<sheetViews><sheetView workbookViewId="0">' +
+          '<pane xSplit="' + xSplit + '" topLeftCell="' + topLeftCell + '" activePane="topRight" state="frozen"/>' +
+          '<selection pane="topRight"/></sheetView></sheetViews>' +
+          '<sheetFormatPr defaultRowHeight="15" outlineLevelRow="1" outlineLevelCol="1"/>';
+        var patched = xml
+          .replace(/<sheetFormatPr[^>]*\/>/, "")
+          .replace(/<sheetViews>[\s\S]*?<\/sheetViews>/, head)
+          .replace(/\slevel="\d+"/g, "")
+          .replace(/hidden="true"/g, 'hidden="1"');
         zip.file(sheetXmlPath, patched);
         return zip.generateAsync({ type: "blob", mimeType: XLSX_MIME });
       });
@@ -1760,15 +1777,28 @@
     // permanently visible; the other 10 columns are hidden by default and share one outline group,
     // bounded by the level-0 spacer either side, so each Card Type section collapses/expands on its
     // own. Verified against a real export: Gross Collection is never part of the hidden range.
-    var colLevels = new Array(finalStartCol + FINAL_COLS.length).fill(0);
+    //
+    // Every column MUST carry an explicit width. A <col> element written without one leaves Excel with
+    // no width and no defaultColWidth to fall back on, and it renders that column collapsed to nothing
+    // — which is exactly how No./MID/Merchant went missing once this !cols array was introduced.
+    var totalExportCols = finalStartCol + FINAL_COLS.length;
+    var colLevels = new Array(totalExportCols).fill(0);
     var hiddenCols = {};
+    var colWidths = new Array(totalExportCols).fill(14); // metric columns
+    colWidths[0] = 4;   // No.
+    colWidths[1] = 16;  // MID (15-digit values)
+    colWidths[2] = 30;  // Merchant
     var cc = leadCols;
     report.paymentGroups.forEach(function(){
+      colWidths[cc] = 20; // Gross Collection — stays visible when the section is collapsed
       for (var i = 1; i < GROUP_SUBCOLS.length; i++){ colLevels[cc + i] = 1; hiddenCols[cc + i] = true; }
+      colWidths[cc + GROUP_SUBCOLS.length] = 2; // spacer
       cc += colsPerGroup;
     });
+    colWidths[reconStartCol + RECON_COLS.length] = 2; // spacer before the TRANSFER block
     reportSheet["!cols"] = colLevels.map(function(level, i){
-      var col = level > 0 ? { level: level } : {};
+      var col = { wch: colWidths[i] };
+      if (level > 0) col.level = level;
       if (hiddenCols[i]) col.hidden = true;
       return col;
     });
@@ -1802,7 +1832,7 @@
 
     // Freezes No./MID/Merchant (the first 3 columns) — no row freeze, matching a real Daily Payout
     // export's own frozen-pane configuration.
-    freezeFirstColumns(arrayBuf, reportSheetXmlPath, 3).then(function(blob){
+    patchWorksheetForExcel(arrayBuf, reportSheetXmlPath, 3).then(function(blob){
       if (!downloadsApi) {
         alert("Downloads aren't available in this preview. Filename would be: " + filename);
         return;

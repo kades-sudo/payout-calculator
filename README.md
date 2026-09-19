@@ -63,6 +63,14 @@ The user supplied a real Daily Payout Excel file (format only, one sheet). Revie
 
 Not addressed by this pass (no reference data covers it): the exact sort order of merchant rows within an Account Code section — the reference file's order doesn't obviously match ours (insertion order from the transaction stream) and no sort rule has been specified.
 
+### Follow-up: two export bugs found in the generated file
+
+Diagnosed from an actual generated workbook, by comparing its worksheet XML attribute-by-attribute against the reference:
+
+- **No./MID/Merchant rendered as zero-width columns.** Introducing the `!cols` array for the toggles made the writer emit a `<col>` element for *every* column, and the ungrouped ones were passed `{}` — producing `<col min="1" max="1"/>` with no `width`. With no width on the element and no `<sheetFormatPr defaultColWidth>` to fall back on, Excel collapses those columns to nothing. Before the toggle work no `<cols>` element was written at all, so Excel's own defaults applied and the columns displayed fine — this was a regression, not a pre-existing issue. Fixed by giving every emitted column an explicit width (No. 4, MID 16, Merchant 30, Gross Collection 20, metrics 14, spacers 2).
+- **The +/- toggles had no clickable control.** Excel decides whether to draw the outline bar from `outlineLevelRow`/`outlineLevelCol` on `<sheetFormatPr>`, and the writer never emits that element at all. The columns and rows carried correct `outlineLevel="1"` attributes, but with no outline bar there was nothing to click — so the detail columns sat hidden with no way to expand them. Fixed by injecting `<sheetFormatPr defaultRowHeight="15" outlineLevelRow="1" outlineLevelCol="1"/>` in the same JSZip patch step as the freeze pane, positioned between `<sheetViews>` and `<cols>` as the schema requires.
+- Two attribute cleanups ride along in that patch: the writer emits a `level` attribute that isn't part of `CT_Col` (only `outlineLevel` is), and writes `hidden="true"` where Excel writes `hidden="1"`. Both are now normalized to match the reference exactly.
+
 ## Workflow (Phase 1 scope)
 
 1. Upload the Master List / Configuration workbook(s) (see above).
