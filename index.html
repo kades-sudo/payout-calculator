@@ -4,6 +4,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <style>
   :root{
@@ -225,7 +226,7 @@
   .report-table tbody td.sticky-col{ background:var(--surface); }
   .report-table tbody tr:hover td.sticky-col{ background:var(--surface-2); }
   .report-table tbody tr.subtotal-row td.sticky-col, .report-table tbody tr.grandtotal-row td.sticky-col{ background:inherit; }
-  .report-table .sticky-col-1{ width:90px; min-width:90px; max-width:90px; }
+  .report-table .sticky-col-1{ width:50px; min-width:50px; max-width:50px; }
   .report-table .sticky-col-2{ width:130px; min-width:130px; max-width:130px; }
   .report-table .sticky-col-3{ width:190px; min-width:190px; max-width:190px; overflow:hidden; text-overflow:ellipsis; }
 
@@ -1526,7 +1527,7 @@
     body.appendChild(summary);
 
     var totalCols = 3 + report.paymentGroups.length * GROUP_SUBCOLS.length + RECON_COLS.length + FINAL_COLS.length;
-    var STICKY_LEFT = [0, 90, 220]; // Account Code, MID, Merchant — matches CSS .sticky-col-3 max-width
+    var STICKY_LEFT = [0, 50, 180]; // No., MID, Merchant — matches CSS sticky-col widths
     function stickyTh(html, idx){
       return '<th class="sticky-col sticky-col-' + (idx + 1) + '" style="left:' + STICKY_LEFT[idx] + 'px">' + html + "</th>";
     }
@@ -1554,7 +1555,7 @@
 
     var headRow = document.createElement("tr");
     headRow.className = "col-row";
-    var headHtml = stickyTh("Account Code", 0) + stickyTh("MID", 1) + stickyTh("Merchant", 2);
+    var headHtml = stickyTh("No.", 0) + stickyTh("MID", 1) + stickyTh("Merchant", 2);
     report.paymentGroups.forEach(function(){
       GROUP_SUBCOLS.forEach(function(col){ headHtml += "<th>" + escapeHtml(col.label) + "</th>"; });
     });
@@ -1570,10 +1571,12 @@
       labelTr.innerHTML = '<td colspan="' + totalCols + '">Account Code ' + escapeHtml(group.accountCode) + "</td>";
       tbody.appendChild(labelTr);
 
+      var lineNo = 0;
       group.lines.forEach(function(line){
+        lineNo++;
         var tr = document.createElement("tr");
         tr.innerHTML =
-          stickyTd(escapeHtml(line.accountCode), 0) +
+          stickyTd(String(lineNo), 0) +
           stickyTd(escapeHtml(line.mid), 1) +
           stickyTd(escapeHtml(line.label), 2) +
           groupCellsHtml(line.groups, false) +
@@ -1618,28 +1621,50 @@
   }
 
   // Excel built-in Cell Style colors (theme-independent) and this workbook's actual Accent1/Accent3
-  // theme tints (computed from the reference report's own theme.xml, not assumed defaults).
+  // theme tints — both sets read directly from a real Daily Payout export's styles.xml, not assumed.
   var XLCOLOR = {
     input: { fill: "FFCC99", font: "3F3F76" },
     good: { fill: "C6EFCE", font: "006100" },
     bad: { fill: "FFC7CE", font: "9C0006" },
     neutral: { fill: "FFEB9C", font: "9C6500" },
-    accent1Light40: { fill: "95B3D7", font: null },
-    accent3Light40: { fill: "C3D69B", font: null }
+    accent1Light: { fill: "B4C6E7", font: null },
+    accent3Light: { fill: "C6E0B4", font: null }
   };
   var HEADER_COLOR_BY_KEY = {
-    accountCode: "input", mid: "good", merchant: "bad",
+    number: "input", mid: "good", merchant: "bad",
     gross: "input", bankRate: "neutral", bankFee: "neutral", merchantRate: "input",
-    noqoodyCharge: "accent1Light40", clearedTxn: "input", ratePerTxn: "input",
-    noqoodyChargePerTxn: "input", refund: "input", profit: "accent3Light40", internalTransfer: "bad"
+    noqoodyCharge: "accent1Light", clearedTxn: "input", ratePerTxn: "input",
+    noqoodyChargePerTxn: "input", refund: "input", profit: "accent3Light", internalTransfer: "bad"
   };
 
-  function styleCell(ws, addr, colorKey, bold){
+  function styleCell(ws, addr, colorKey){
     var c = XLCOLOR[colorKey];
     if (!c || !ws[addr]) return;
-    var s = { fill: { fgColor: { rgb: "FF" + c.fill } }, font: { bold: bold !== false } };
+    var s = { fill: { fgColor: { rgb: "FF" + c.fill } }, font: {} };
     if (c.font) s.font.color = { rgb: "FF" + c.font };
     ws[addr].s = s;
+  }
+
+  var XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+  // Neither SheetJS build available to this page writes freeze panes through its public API, but the
+  // file format itself supports it fine — patch it directly into the generated zip's worksheet XML.
+  // Freezes only the first `xSplit` columns (no row freeze), matching a real Daily Payout export's own
+  // <pane> element exactly. Falls back to the unpatched file if JSZip isn't available or the patch
+  // fails for any reason, so this never blocks the download itself.
+  function freezeFirstColumns(arrayBuf, sheetXmlPath, xSplit){
+    if (typeof JSZip === "undefined") return Promise.resolve(new Blob([arrayBuf], { type: XLSX_MIME }));
+    return JSZip.loadAsync(arrayBuf).then(function(zip){
+      return zip.file(sheetXmlPath).async("string").then(function(xml){
+        var topLeftCell = XLSX.utils.encode_col(xSplit) + "1";
+        var pane = '<sheetViews><sheetView workbookViewId="0"><pane xSplit="' + xSplit + '" topLeftCell="' + topLeftCell + '" activePane="topRight" state="frozen"/><selection pane="topRight"/></sheetView></sheetViews>';
+        var patched = xml.replace(/<sheetViews>.*?<\/sheetViews>/, pane);
+        zip.file(sheetXmlPath, patched);
+        return zip.generateAsync({ type: "blob", mimeType: XLSX_MIME });
+      });
+    }).catch(function(){
+      return new Blob([arrayBuf], { type: XLSX_MIME });
+    });
   }
 
   function downloadPayoutReport(){
@@ -1669,7 +1694,7 @@
       return row;
     }
     function buildColHeaderRow(){
-      var row = ["Account Code", "MID", "Merchant"];
+      var row = ["No.", "MID", "Merchant"];
       report.paymentGroups.forEach(function(){
         GROUP_SUBCOLS.forEach(function(c){ row.push(c.label); });
         row.push(SPACER);
@@ -1715,8 +1740,10 @@
       var colHeaderRowIdx = pushRow(buildColHeaderRow(), 0);
       colHeaderRowIdxs.push(colHeaderRowIdx);
 
+      var lineNo = 0;
       group.lines.forEach(function(line){
-        pushRow(lineToRow([line.accountCode, line.mid, line.label], line.groups, line), 1);
+        lineNo++;
+        pushRow(lineToRow([lineNo, line.mid, line.label], line.groups, line), 1);
       });
       var subRowIdx = pushRow(lineToRow(["SUBTOTAL — Account Code " + group.accountCode, "", ""], group.subtotal.groups, group.subtotal), 0);
       addMerge(subRowIdx, 0, 2);
@@ -1729,19 +1756,26 @@
     reportSheet["!merges"] = merges;
     reportSheet["!rows"] = rowLevels.map(function(level){ return level > 0 ? { level: level } : {}; });
 
-    // Column Type toggles: each payment group's 11 columns get their own outline group (bounded by the
-    // level-0 spacer columns either side), so they collapse/expand independently in Excel.
+    // Column Type toggles: within each payment group, Gross Collection (the headline figure) stays
+    // permanently visible; the other 10 columns are hidden by default and share one outline group,
+    // bounded by the level-0 spacer either side, so each Card Type section collapses/expands on its
+    // own. Verified against a real export: Gross Collection is never part of the hidden range.
     var colLevels = new Array(finalStartCol + FINAL_COLS.length).fill(0);
+    var hiddenCols = {};
     var cc = leadCols;
     report.paymentGroups.forEach(function(){
-      for (var i = 0; i < GROUP_SUBCOLS.length; i++) colLevels[cc + i] = 1;
+      for (var i = 1; i < GROUP_SUBCOLS.length; i++){ colLevels[cc + i] = 1; hiddenCols[cc + i] = true; }
       cc += colsPerGroup;
     });
-    reportSheet["!cols"] = colLevels.map(function(level){ return level > 0 ? { level: level } : {}; });
+    reportSheet["!cols"] = colLevels.map(function(level, i){
+      var col = level > 0 ? { level: level } : {};
+      if (hiddenCols[i]) col.hidden = true;
+      return col;
+    });
 
     // Column header colors — applied identically to every repeated Card Type section header row.
     colHeaderRowIdxs.forEach(function(r){
-      styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 0 }), HEADER_COLOR_BY_KEY.accountCode);
+      styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 0 }), HEADER_COLOR_BY_KEY.number);
       styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 1 }), HEADER_COLOR_BY_KEY.mid);
       styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 2 }), HEADER_COLOR_BY_KEY.merchant);
       var col = leadCols;
@@ -1760,27 +1794,31 @@
     XLSX.utils.book_append_sheet(wb, reportSheet, sheetName);
     XLSX.utils.book_append_sheet(wb, prdSheet, "Process Raw Details");
     var arrayBuf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
-    var blob = new Blob([arrayBuf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    var reportSheetXmlPath = "xl/worksheets/sheet" + (wb.SheetNames.indexOf(sheetName) + 1) + ".xml";
 
     var dateStr = modePostingDate(state.result.processed);
     var filename = "Payout_Report_" + freq + "_" + dateStr + ".xlsx";
-
-    if (!downloadsApi) {
-      alert("Downloads aren't available in this preview. Filename would be: " + filename);
-      return;
-    }
     var btn = els.downloadReportBtn;
-    btn.disabled = true;
-    var original = btn.textContent;
-    btn.textContent = "Saving…";
-    downloadsApi.save({ filename: filename, data: blob }).then(function(){
-      btn.textContent = "Saved ✓";
-      setTimeout(function(){ btn.textContent = original; btn.disabled = false; }, 1600);
-    }).catch(function(err){
-      btn.disabled = false;
-      btn.textContent = original;
-      if (err && err.code === "declined") return;
-      alert("Could not save the file: " + (err && err.message ? err.message : "unknown error"));
+
+    // Freezes No./MID/Merchant (the first 3 columns) — no row freeze, matching a real Daily Payout
+    // export's own frozen-pane configuration.
+    freezeFirstColumns(arrayBuf, reportSheetXmlPath, 3).then(function(blob){
+      if (!downloadsApi) {
+        alert("Downloads aren't available in this preview. Filename would be: " + filename);
+        return;
+      }
+      btn.disabled = true;
+      var original = btn.textContent;
+      btn.textContent = "Saving…";
+      downloadsApi.save({ filename: filename, data: blob }).then(function(){
+        btn.textContent = "Saved ✓";
+        setTimeout(function(){ btn.textContent = original; btn.disabled = false; }, 1600);
+      }).catch(function(err){
+        btn.disabled = false;
+        btn.textContent = original;
+        if (err && err.code === "declined") return;
+        alert("Could not save the file: " + (err && err.message ? err.message : "unknown error"));
+      });
     });
   }
 
