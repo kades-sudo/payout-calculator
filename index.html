@@ -1421,7 +1421,7 @@
     { key: "bankFee", label: "Bank Fee", num: true },
     { key: "merchantRate", label: "Merchant Rate", pct: true },
     { key: "noqoodyCharge", label: "Noqoody Charge", num: true },
-    { key: "clearedTxn", label: "Cleared Txn", num: true },
+    { key: "clearedTxn", label: "Cleared Txn", int: true },
     { key: "ratePerTxn", label: "Merchant Rate/Txn", num: true },
     { key: "noqoodyChargePerTxn", label: "Noqoody Charge/Txn", num: true },
     { key: "refund", label: "Refund", num: true },
@@ -1447,7 +1447,25 @@
     { key: "difference", label: "Difference", num: true }
   ];
 
-  function fmtPct(v){ return (v || v === 0) ? (round2(v * 100)) + "%" : ""; }
+  // Display formats mirror the reference export's own number formats exactly:
+  // amounts #,##0.00 · rates 0.00% · transaction counts #,##0 (no decimals).
+  function fmtPct(v){
+    if (v === null || v === undefined || v === "") return "";
+    return (v * 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%";
+  }
+  function fmtCount(v){
+    if (v === null || v === undefined || v === "") return "";
+    var n = Number(v);
+    return isNaN(n) ? String(v) : n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  }
+  var XL_FMT_AMOUNT = "#,##0.00";
+  var XL_FMT_PERCENT = "0.00%";
+  var XL_FMT_COUNT = "#,##0";
+  function excelFormatFor(col){
+    if (col.pct) return XL_FMT_PERCENT;
+    if (col.int) return XL_FMT_COUNT;
+    return XL_FMT_AMOUNT;
+  }
 
   function recomputeAndRenderPayoutReport(){
     var bankCostIndex = buildBankCostIndex(state.bankCostRows);
@@ -1483,13 +1501,18 @@
     return '<td class="num">' + fmtAmount(v) + "</td>";
   }
 
+  function formatGroupValue(col, v){
+    if (col.pct) return fmtPct(v);
+    if (col.int) return fmtCount(v);
+    return fmtAmount(v);
+  }
   function groupCellsHtml(groups, isSubtotal){
     var html = "";
     groups.forEach(function(g){
       GROUP_SUBCOLS.forEach(function(col){
         var v = g[col.key];
-        if (v === 0 && col.key !== "clearedTxn") { html += '<td class="num muted">0</td>'; return; }
-        html += '<td class="num">' + (col.pct ? fmtPct(v) : fmtAmount(v)) + "</td>";
+        var cls = v === 0 ? "num muted" : "num";
+        html += '<td class="' + cls + '">' + formatGroupValue(col, v) + "</td>";
       });
     });
     return html;
@@ -1801,6 +1824,26 @@
       if (level > 0) col.level = level;
       if (hiddenCols[i]) col.hidden = true;
       return col;
+    });
+
+    // Number formats — the same set the reference export uses: amounts #,##0.00, rates 0.00%,
+    // transaction counts #,##0. Applied as cell number formats, so the values stay numeric and keep
+    // calculating; only their display changes. Header/label cells are strings, so they're skipped.
+    var colFormats = {};
+    var fc = leadCols;
+    report.paymentGroups.forEach(function(){
+      GROUP_SUBCOLS.forEach(function(col, i){ colFormats[fc + i] = excelFormatFor(col); });
+      fc += colsPerGroup;
+    });
+    RECON_COLS.forEach(function(col, i){ colFormats[reconStartCol + i] = excelFormatFor(col); });
+    FINAL_COLS.forEach(function(col, i){ colFormats[finalStartCol + i] = excelFormatFor(col); });
+
+    var sheetRange = XLSX.utils.decode_range(reportSheet["!ref"]);
+    Object.keys(colFormats).forEach(function(colIdx){
+      for (var rr = sheetRange.s.r; rr <= sheetRange.e.r; rr++){
+        var cell = reportSheet[XLSX.utils.encode_cell({ r: rr, c: Number(colIdx) })];
+        if (cell && cell.t === "n") cell.z = colFormats[colIdx];
+      }
     });
 
     // Column header colors — applied identically to every repeated Card Type section header row.

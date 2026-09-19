@@ -71,6 +71,19 @@ Diagnosed from an actual generated workbook, by comparing its worksheet XML attr
 - **The +/- toggles had no clickable control.** Excel decides whether to draw the outline bar from `outlineLevelRow`/`outlineLevelCol` on `<sheetFormatPr>`, and the writer never emits that element at all. The columns and rows carried correct `outlineLevel="1"` attributes, but with no outline bar there was nothing to click — so the detail columns sat hidden with no way to expand them. Fixed by injecting `<sheetFormatPr defaultRowHeight="15" outlineLevelRow="1" outlineLevelCol="1"/>` in the same JSZip patch step as the freeze pane, positioned between `<sheetViews>` and `<cols>` as the schema requires.
 - Two attribute cleanups ride along in that patch: the writer emits a `level` attribute that isn't part of `CT_Col` (only `outlineLevel` is), and writes `hidden="true"` where Excel writes `hidden="1"`. Both are now normalized to match the reference exactly.
 
+### Amount formatting
+
+Decimal precision was taken from the reference export's own number formats rather than assumed — it uses three of Excel's built-in formats, and the app now applies the same three to the same columns:
+
+| Column | Format | Built-in id |
+|---|---|---|
+| Gross Collection, Bank Fee, Noqoody Charge, Merchant Rate/Txn, Noqoody Charge/Txn, Refund, Noqoody Profit, Internal Transfer, and every Merchant Reconciliation / Transfer column | `#,##0.00` | 4 |
+| Bank Rate, Merchant Rate | `0.00%` | 10 |
+| Cleared Txn | `#,##0` | 3 |
+| No., MID, Merchant | General | 0 |
+
+In the Excel export these are applied as **cell number formats**, so values stay numeric (`t="n"`) and keep calculating — nothing is converted to text. The on-screen Grid View already had comma-separated amounts; three inconsistencies were corrected to match the same rules: rates now always show two decimals (`2.50%`, previously `2.5%`), Cleared Txn now renders as an integer count (`21`, previously `21.00`), and zero values now show as `0.00` rather than a bare `0`.
+
 ## Workflow (Phase 1 scope)
 
 1. Upload the Master List / Configuration workbook(s) (see above).
