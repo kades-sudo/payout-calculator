@@ -1,3 +1,5 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Payout Calculator</title>
 <meta name="description" content="Phase 1: automated OMS transaction enrichment, master-list matching, and Process Raw Details generation.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -213,11 +215,18 @@
   .chip.pending{ background:var(--pending-soft); color:var(--pending); font-family:"IBM Plex Mono",monospace; font-size:10px; }
 
   /* ---- Payout report: section-aware sticky headers + frozen columns ---- */
-  .report-table thead th{ height:32px; box-sizing:border-box; }
-  .report-table thead tr.group-row th{ top:0; z-index:4; }
-  .report-table thead tr.col-row th{ top:32px; z-index:4; }
+  /* Column headers wrap onto as many lines as they need and are bold everywhere they appear.
+     The two header rows are sticky, so their offsets can't be hard-coded once the text wraps to a
+     variable height — renderPayoutReport measures both rows and publishes --grp-h / --head-h. */
+  .report-table thead th{
+    box-sizing:border-box; font-weight:700; white-space:normal; overflow-wrap:break-word;
+    vertical-align:bottom; line-height:1.25;
+  }
+  .report-table thead tr.group-row th{ top:0; z-index:4; height:32px; white-space:nowrap; }
+  .report-table thead tr.col-row th{ top:var(--grp-h,32px); z-index:4; min-width:86px; }
+  .report-table tbody tr.subtotal-row td, .report-table tbody tr.grandtotal-row td{ font-weight:700; }
   .report-table tbody tr.section-label td{
-    position:sticky; top:64px; left:0; z-index:3;
+    position:sticky; top:var(--head-h,64px); left:0; z-index:3;
     background:var(--surface-2); color:var(--ink); font-weight:700; font-size:12px;
     padding:6px 12px; border-top:1px solid var(--border); border-bottom:1px solid var(--border);
   }
@@ -235,6 +244,53 @@
   }
   .banner.sample{ background:var(--accent-soft); color:var(--accent); }
   .banner.warn{ background:var(--warn-soft); color:var(--warn); }
+  .banner.bad{ background:var(--danger-soft); color:var(--danger); }
+
+  /* ---- Dashboard: icon-led stat tiles, built only from existing design tokens ---- */
+  .dash-head{ display:flex; align-items:baseline; justify-content:space-between; gap:14px; flex-wrap:wrap; margin:20px 0 10px; }
+  .dash-title{ font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-muted); }
+  .dash-sub{ font-size:11.5px; color:var(--ink-muted); }
+  .dash-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(186px,1fr)); gap:10px; }
+  .dash-grid.lead{ grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); }
+  .dash-card{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:13px 14px; display:flex; flex-direction:column; gap:8px; min-width:0;
+  }
+  .dash-card.lead{ padding:16px 18px; }
+  .dash-card-top{ display:flex; align-items:center; gap:9px; min-width:0; }
+  .dash-icon{
+    flex:none; width:30px; height:30px; border-radius:9px; display:grid; place-items:center;
+    background:var(--accent-soft); color:var(--accent);
+  }
+  .dash-icon svg{ width:16px; height:16px; display:block; }
+  .dash-name{ font-size:12px; font-weight:600; color:var(--ink); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* Proportional figures: a standalone value reads loose in tabular-nums at display sizes. */
+  .dash-value{ font-size:22px; font-weight:650; color:var(--ink); letter-spacing:-.012em; line-height:1.15; }
+  .dash-card.lead .dash-value{ font-size:29px; }
+  .dash-meta{ font-size:11px; color:var(--ink-muted); line-height:1.35; }
+  .dash-card.zero .dash-value{ color:var(--ink-muted); }
+  .dash-card.zero .dash-icon{ background:var(--pending-soft); color:var(--pending); }
+  .dash-card.flagged{ border-color:var(--warn); }
+  .dash-card.flagged .dash-icon{ background:var(--warn-soft); color:var(--warn); }
+
+  /* ---- Duplicate validation results ---- */
+  #validationBody{ padding:0 20px 18px; }
+  #validationBody .banner{ margin:0 0 12px; }
+  .dup-note{ font-size:11.5px; color:var(--ink-muted); line-height:1.5; margin:0 0 12px; }
+  .dup-group{ border:1px solid var(--border); border-radius:10px; margin-bottom:8px; background:var(--surface); }
+  .dup-group > summary{
+    display:flex; align-items:center; gap:10px; padding:10px 12px; cursor:pointer;
+    font-size:12.5px; list-style:none;
+  }
+  .dup-group > summary::-webkit-details-marker{ display:none; }
+  .dup-group > summary::after{ content:"▸"; margin-left:auto; color:var(--ink-muted); font-size:11px; }
+  .dup-group[open] > summary::after{ content:"▾"; }
+  .dup-title{ font-weight:600; color:var(--ink); }
+  .dup-count{ font-size:11px; color:var(--ink-muted); font-family:"IBM Plex Mono",monospace; }
+  .dup-detail{ font-size:11.5px; color:var(--ink-muted); line-height:1.5; padding:0 12px 10px; }
+  .dup-group .table-scroll{ border-top:1px solid var(--border); }
+  .dup-group table{ font-size:11.5px; }
+  .dup-group tbody tr.dup-first td{ border-top:2px solid var(--border); }
 
   footer{ text-align:center; color:var(--ink-muted); font-size:11.5px; padding-top:6px; }
   footer a{ color:inherit; }
@@ -316,6 +372,13 @@
           <li data-step="classification" class="pending-rule"><span class="dot"></span>Classification lookup<span class="tag">rule pending</span></li>
           <li data-step="build"><span class="dot"></span>Create Process Raw Details</li>
         </ol>
+      </div>
+
+      <div class="panel results-panel" id="validationPanel" hidden>
+        <div class="results-head">
+          <div class="results-title">Master List validation — duplicate MID / TID</div>
+        </div>
+        <div id="validationBody"></div>
       </div>
 
       <div class="panel results-panel" id="resultsPanel">
@@ -945,6 +1008,27 @@
       if (belowLine) merchantLines.push(belowLine);
     });
 
+    // A Card Type 2 present in the data but matching no Card_Types row has no section to be
+    // calculated in, so it contributes nothing to any payout figure. Those transactions are tracked
+    // here so the dashboard can surface them under "Others" instead of dropping them silently.
+    var configuredGroupKeys = {};
+    paymentGroups.forEach(function(pg){ configuredGroupKeys[norm(pg.name)] = true; });
+    var otherCardTypeMap = new Map();
+    var reportedSaleTxnCount = 0;
+    sortedGroups.forEach(function(g){
+      g.rows.forEach(function(r){
+        if (norm(r.transactionType) !== "sale") return;
+        reportedSaleTxnCount++;
+        if (configuredGroupKeys[norm(r.cardType2)]) return;
+        var label = String(r.cardType2 === undefined || r.cardType2 === null ? "" : r.cardType2).trim() || "(blank Card Type 2)";
+        var entry = otherCardTypeMap.get(label) || { label: label, clearedTxn: 0, gross: 0 };
+        entry.clearedTxn += 1;
+        entry.gross = round2(entry.gross + toNumber(r.grossAmount));
+        otherCardTypeMap.set(label, entry);
+      });
+    });
+    var otherCardTypes = Array.from(otherCardTypeMap.values()).sort(function(a, b){ return b.clearedTxn - a.clearedTxn; });
+
     var byAccountCode = new Map();
     merchantLines.forEach(function(line){
       if (!byAccountCode.has(line.accountCode)) byAccountCode.set(line.accountCode, []);
@@ -1016,7 +1100,9 @@
       merchantLines: merchantLines,
       grandTotal: grandTotal,
       unresolvedCount: unresolvedCount,
-      excludedByFrequencyCount: excludedByFrequencyCount
+      excludedByFrequencyCount: excludedByFrequencyCount,
+      otherCardTypes: otherCardTypes,
+      reportedSaleTxnCount: reportedSaleTxnCount
     };
   }
 
@@ -1040,8 +1126,360 @@
     payoutReportPanel: document.getElementById("payoutReportPanel"),
     generateReportBtn: document.getElementById("generateReportBtn"),
     downloadReportBtn: document.getElementById("downloadReportBtn"),
-    payoutReportBody: document.getElementById("payoutReportBody")
+    payoutReportBody: document.getElementById("payoutReportBody"),
+    validationPanel: document.getElementById("validationPanel"),
+    validationBody: document.getElementById("validationBody")
   };
+
+
+  /* ---------------- Dashboard ---------------- */
+  // Payment categories are read from the Card_Types sheet at run time, never hardcoded: adding a row
+  // there adds a report section AND a dashboard card, with no code change. "Others" collects every
+  // Card Type 2 seen in the data that no Card_Types row defines.
+  //
+  // Reference field: Card Type 2 is used TEMPORARILY for grouping, because Classification is not yet
+  // populated by the pipeline (runPipeline sets it to ""). DASHBOARD_REFERENCE_FIELD is the single
+  // switch — point it at "classification" once that lookup rule exists and the grouping follows.
+  var DASHBOARD_REFERENCE_FIELD = "cardType2";
+
+  // One distinct glyph per category. Known payment types get a matching icon; anything added to
+  // Card_Types later gets a stable distinct glyph from the pool, so new sections need no code change.
+  var ICON_PATHS = {
+    creditcard: '<rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/><path d="M6 15h4"/>',
+    debitcard: '<rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/><rect x="5" y="13" width="4" height="3" rx="1"/>',
+    wallet: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H18a1 1 0 0 1 1 1v1.5"/><path d="M3 7.5V17a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a1 1 0 0 0-1-1H5.5A2.5 2.5 0 0 1 3 7.5Z"/><circle cx="17" cy="13.5" r="1.1"/>',
+    shield: '<path d="M12 3 5 6v5.5c0 4 2.9 7.4 7 9.5 4.1-2.1 7-5.5 7-9.5V6l-7-3Z"/><path d="M9.5 12.2l1.8 1.8 3.4-3.6"/>',
+    globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18Z"/>',
+    badge: '<circle cx="12" cy="9.5" r="5.5"/><path d="M8.5 14 7 21l5-2.5L17 21l-1.5-7"/>',
+    diamond: '<path d="M12 3 21 12l-9 9-9-9 9-9Z"/><path d="M8.5 12h7"/>',
+    exchange: '<circle cx="12" cy="12" r="9"/><path d="M8 10.5h7l-2-2"/><path d="M16 13.5H9l2 2"/>',
+    layers: '<path d="M12 3 3 7.5l9 4.5 9-4.5L12 3Z"/><path d="M3 12.5 12 17l9-4.5"/><path d="M3 16.5 12 21l9-4.5"/>',
+    tag: '<path d="M3 11V4a1 1 0 0 1 1-1h7l9 9-8 8-9-9Z"/><circle cx="7.5" cy="7.5" r="1.3"/>',
+    grid: '<rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/>',
+    box: '<path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/>',
+    receipt: '<path d="M5 3h14v18l-2.3-1.6L14.4 21l-2.4-1.6L9.6 21l-2.3-1.6L5 21V3Z"/><path d="M9 8h6"/><path d="M9 12h6"/>',
+    transfer: '<rect x="2" y="6" width="20" height="12" rx="2.5"/><circle cx="12" cy="12" r="2.6"/><path d="M6 10v4"/><path d="M18 10v4"/>',
+    profit: '<path d="M3 17l5.5-5.5 3.5 3.5L21 6"/><path d="M15 6h6v6"/>'
+  };
+  var CATEGORY_ICON = {
+    creditcard: "creditcard", debitcard: "debitcard", debitwallet: "wallet", wallet: "wallet",
+    himyan: "shield", amex: "badge", americanexpress: "badge",
+    chinaunionpay: "globe", chinaunion: "globe", unionpay: "globe",
+    jcb: "diamond", paypal: "exchange", others: "layers"
+  };
+  var ICON_FALLBACK_POOL = ["tag", "grid", "box", "diamond", "badge", "exchange"];
+  function iconFor(categoryName){
+    var key = norm(categoryName);
+    if (CATEGORY_ICON[key]) return ICON_PATHS[CATEGORY_ICON[key]];
+    // Stable per name, so a category keeps the same glyph across re-renders and sessions.
+    var h = 0;
+    for (var i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) % 9973;
+    return ICON_PATHS[ICON_FALLBACK_POOL[h % ICON_FALLBACK_POOL.length]];
+  }
+  function iconSvg(paths){
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + "</svg>";
+  }
+
+  // Every dashboard figure is summed from the report's merchant lines — never from a subtotal or
+  // grand-total row, and never from the Merchant Reconciliation block — so nothing is counted twice.
+  // Main and Below Amount rows are both merchant lines, so both are included exactly once.
+  function computeDashboard(report){
+    var lines = report.merchantLines;
+    var categories = report.paymentGroups.map(function(pg, i){
+      return {
+        name: pg.name,
+        configured: true,
+        clearedTxn: sumBy(lines, function(l){ return l.groups[i].clearedTxn; }),
+        internalTransfer: round2(sumBy(lines, function(l){ return l.groups[i].internalTransfer; })),
+        profit: round2(sumBy(lines, function(l){ return l.groups[i].profit; }))
+      };
+    });
+    categories.push({
+      name: "Others",
+      configured: false,
+      clearedTxn: sumBy(report.otherCardTypes, function(o){ return o.clearedTxn; }),
+      // Structurally zero: a Card Type 2 with no Card_Types row has no rate, no cost column and no
+      // report section, so it never enters an Internal Transfer or Profit calculation anywhere.
+      internalTransfer: 0,
+      profit: 0,
+      gross: round2(sumBy(report.otherCardTypes, function(o){ return o.gross; })),
+      detail: report.otherCardTypes
+    });
+
+    var totalTxn = sumBy(categories, function(c){ return c.clearedTxn; });
+    var totalPayout = round2(sumBy(categories, function(c){ return c.internalTransfer; }));
+    var totalProfit = round2(sumBy(lines, function(l){ return l.totalProfit; }));
+
+    // Reconciliation: each dashboard total is re-derived from the merchant lines and compared with
+    // the figure the report itself publishes. A mismatch means double counting or a dropped row.
+    var checks = [];
+    function check(label, dashboardValue, reportValue, reportLabel, decimals){
+      var tol = decimals ? 0.005 : 0;
+      checks.push({
+        label: label, reportLabel: reportLabel, decimals: !!decimals,
+        dashboardValue: dashboardValue, reportValue: reportValue,
+        ok: Math.abs(dashboardValue - reportValue) <= tol
+      });
+    }
+    check("Total Payout Amount", totalPayout, report.grandTotal.totalInternalTransfer,
+      "Grand Total · Total Internal Transfer", true);
+    check("Total Profit Amount", totalProfit, report.grandTotal.totalProfit,
+      "Merchant Reconciliation · Total Noqoody Profit", true);
+    check("Total Transaction Count", totalTxn, report.reportedSaleTxnCount,
+      "Sale transactions in this payout", false);
+    var subtotalClearedTxn = report.accountCodeGroups.reduce(function(acc, g){
+      return acc + sumBy(g.subtotal.groups, function(sg){ return sg.clearedTxn; });
+    }, 0);
+    check("Cleared transactions in report sections", totalTxn - categories[categories.length - 1].clearedTxn,
+      subtotalClearedTxn, "Sum of Account Code subtotals · Cleared Txn", false);
+
+    return {
+      categories: categories,
+      totalTxn: totalTxn,
+      totalPayout: totalPayout,
+      totalProfit: totalProfit,
+      checks: checks,
+      mismatches: checks.filter(function(c){ return !c.ok; })
+    };
+  }
+
+  function dashCard(opts){
+    var cls = "dash-card" + (opts.lead ? " lead" : "") + (opts.zero ? " zero" : "") + (opts.flagged ? " flagged" : "");
+    return '<div class="' + cls + '">' +
+      '<div class="dash-card-top">' +
+        '<span class="dash-icon">' + iconSvg(opts.icon) + "</span>" +
+        '<span class="dash-name" title="' + escapeHtml(opts.name) + '">' + escapeHtml(opts.name) + "</span>" +
+      "</div>" +
+      '<div class="dash-value">' + escapeHtml(opts.value) + "</div>" +
+      (opts.meta ? '<div class="dash-meta">' + opts.meta + "</div>" : "") +
+    "</div>";
+  }
+
+  function renderDashboard(report, frequency){
+    var d = computeDashboard(report);
+    var html = "";
+
+    html += '<div class="dash-head"><div class="dash-title">' + escapeHtml(frequency || "") + " payout dashboard</div>" +
+      '<div class="dash-sub">Live from the processed transactions — refreshes on upload, frequency change and reprocessing</div></div>';
+
+    html += '<div class="dash-grid lead">' +
+      dashCard({ lead: true, icon: ICON_PATHS.receipt, name: "Cleared Transactions",
+                 value: fmtCount(d.totalTxn), meta: "Sale transactions in this payout" }) +
+      dashCard({ lead: true, icon: ICON_PATHS.transfer, name: "Total Payout Amount",
+                 value: fmtAmount(d.totalPayout), meta: "Total Internal Transfer" }) +
+      dashCard({ lead: true, icon: ICON_PATHS.profit, name: "Total Profit Amount",
+                 value: fmtAmount(d.totalProfit), meta: "Total Noqoody Profit" }) +
+      "</div>";
+
+    if (d.mismatches.length){
+      html += '<div class="banner bad" style="margin:12px 0 0;"><strong>Dashboard reconciliation failed.</strong> ' +
+        d.mismatches.map(function(c){
+          var fmt = c.decimals ? fmtAmount : fmtCount;
+          return escapeHtml(c.label) + " reads " + fmt(c.dashboardValue) + " but " + escapeHtml(c.reportLabel) +
+            " reads " + fmt(c.reportValue) + ".";
+        }).join(" ") +
+        " These figures must agree — do not use this dashboard until the difference is explained.</div>";
+    }
+
+    var othersCat = d.categories[d.categories.length - 1];
+
+    html += '<div class="dash-head"><div class="dash-title">Transaction count by payment category</div>' +
+      '<div class="dash-sub">Cleared (Sale) transactions · grouped by <strong>Card Type 2</strong> (temporary — Classification is not yet populated)</div></div>';
+    html += '<div class="dash-grid">' + d.categories.map(function(c){
+      return dashCard({
+        icon: iconFor(c.name), name: c.name, value: fmtCount(c.clearedTxn), zero: c.clearedTxn === 0,
+        flagged: !c.configured && c.clearedTxn > 0,
+        meta: d.totalTxn > 0 ? ((c.clearedTxn / d.totalTxn) * 100).toFixed(1) + "% of cleared transactions" : "No transactions"
+      });
+    }).join("") + "</div>";
+
+    html += '<div class="dash-head"><div class="dash-title">Total payout amount by payment category</div>' +
+      '<div class="dash-sub">Internal Transfer per category · main and Below Amount rows both included</div></div>';
+    html += '<div class="dash-grid">' + d.categories.map(function(c){
+      return dashCard({
+        icon: iconFor(c.name), name: c.name, value: fmtAmount(c.internalTransfer),
+        zero: c.internalTransfer === 0, flagged: !c.configured && c.clearedTxn > 0,
+        meta: fmtCount(c.clearedTxn) + " cleared txn"
+      });
+    }).join("") + "</div>";
+
+    if (othersCat.clearedTxn > 0){
+      html += '<div class="banner warn" style="margin:12px 0 0;"><strong>' + fmtCount(othersCat.clearedTxn) +
+        " cleared transaction(s) fall under Others</strong> — their Card Type 2 matches no row in the Card_Types sheet, so they carry no merchant rate, no bank rate and no report section. " +
+        "Their payout amount therefore reads 0.00 and their gross of " + fmtAmount(othersCat.gross) +
+        " is excluded from every payout figure. Add these to Card_Types to bring them into the report: " +
+        othersCat.detail.map(function(o){ return "<strong>" + escapeHtml(o.label) + "</strong> (" + fmtCount(o.clearedTxn) + ")"; }).join(", ") +
+        ".</div>";
+    }
+
+    return html;
+  }
+
+
+  /* ---------------- Master List duplicate MID / TID validation ---------------- */
+  // Runs during the validation stage, before any payout report is generated. Nothing is removed,
+  // merged or rewritten — the original rows stay exactly as uploaded and are only reported.
+  //
+  // Severity reflects what each repetition actually does to the lookups:
+  //   error   — the composite lookup key repeats, so one row silently wins and the other is
+  //             unreachable. buildMasterListIndex keys on MID + Merchant Key (last row wins);
+  //             buildTerminalMapIndex keys on MID + Terminal ID (first row wins).
+  //   warning — one Terminal ID is claimed by more than one MID, so a terminal's payouts could be
+  //             attributed to the wrong merchant.
+  //   info    — an expected repetition: a shared MID across distinct Merchant Keys, or one MID
+  //             spanning many terminals. Reported for review, not as a defect.
+  function collectDuplicates(rows, keyFn, describeFn){
+    var buckets = new Map();
+    rows.forEach(function(row, i){
+      var key = keyFn(row);
+      if (key === null) return;
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(describeFn(row, i + 2)); // +2: 1-based sheet row, past the header
+    });
+    var out = [];
+    buckets.forEach(function(members, key){
+      if (members.length > 1) out.push({ key: key, members: members });
+    });
+    return out.sort(function(a, b){ return b.members.length - a.members.length; });
+  }
+
+  function validateConfigDuplicates(masterListRows, terminalMappingRows){
+    var groups = [];
+    var blank = function(v){ return String(v === undefined || v === null ? "" : v).trim(); };
+
+    if (masterListRows && masterListRows.length){
+      var mlRes = buildResolver(Object.keys(masterListRows[0]), MASTER_FIELD_CANDIDATES);
+      var mlDesc = function(row, rowNo){
+        return {
+          sheet: "Master_List", rowNo: rowNo,
+          mid: blank(mlRes.mid ? row[mlRes.mid] : ""),
+          tid: "",
+          merchantKey: blank(mlRes.merchantKey ? row[mlRes.merchantKey] : ""),
+          merchantName: blank(mlRes.merchantName ? row[mlRes.merchantName] : ""),
+          accountCode: "",
+          status: blank(mlRes.status ? row[mlRes.status] : "")
+        };
+      };
+      var mlKeyed = function(fn){ return function(row){ var k = fn(row); return k === "" || k === "|" ? null : k; }; };
+      groups.push({
+        id: "ml_mid_key", severity: "error", sheet: "Master_List",
+        title: "Duplicate MID + Merchant Key",
+        detail: "These rows share the same Master_List lookup key, so only the last one is ever used — the others never match a transaction.",
+        findings: collectDuplicates(masterListRows,
+          mlKeyed(function(row){ return norm(mlRes.mid ? row[mlRes.mid] : "") + "|" + norm(mlRes.merchantKey ? row[mlRes.merchantKey] : ""); }), mlDesc)
+      });
+      groups.push({
+        id: "ml_mid", severity: "info", sheet: "Master_List",
+        title: "Repeated MID across different Merchant Keys",
+        detail: "Expected for shared-MID merchants: several merchants trade under one physical MID and are separated by Merchant Key. Listed for review only.",
+        findings: collectDuplicates(masterListRows,
+          mlKeyed(function(row){ return norm(mlRes.mid ? row[mlRes.mid] : ""); }), mlDesc)
+      });
+    }
+
+    if (terminalMappingRows && terminalMappingRows.length){
+      var tmRes = buildResolver(Object.keys(terminalMappingRows[0]), TERMINAL_FIELD_CANDIDATES);
+      var tmDesc = function(row, rowNo){
+        return {
+          sheet: "Terminal_Mapping", rowNo: rowNo,
+          mid: blank(tmRes.mid ? row[tmRes.mid] : ""),
+          tid: blank(tmRes.terminalId ? row[tmRes.terminalId] : ""),
+          merchantKey: blank(tmRes.merchantKey ? row[tmRes.merchantKey] : ""),
+          merchantName: "",
+          accountCode: blank(tmRes.accountCode ? row[tmRes.accountCode] : ""),
+          status: blank(tmRes.status ? row[tmRes.status] : "")
+        };
+      };
+      var tmKeyed = function(fn){ return function(row){ var k = fn(row); return k === "" || k === "|" ? null : k; }; };
+      groups.push({
+        id: "tm_mid_tid", severity: "error", sheet: "Terminal_Mapping",
+        title: "Duplicate MID + Terminal ID",
+        detail: "A terminal is mapped more than once. Only the first row is ever used, so any different Merchant Key or Account Code on the later rows is silently ignored.",
+        findings: collectDuplicates(terminalMappingRows,
+          tmKeyed(function(row){ return norm(tmRes.mid ? row[tmRes.mid] : "") + "|" + norm(tmRes.terminalId ? row[tmRes.terminalId] : ""); }), tmDesc)
+      });
+      groups.push({
+        id: "tm_tid", severity: "warning", sheet: "Terminal_Mapping",
+        title: "Terminal ID claimed by more than one MID",
+        detail: "The same Terminal ID appears under different MIDs, so a transaction from that terminal could be attributed to the wrong merchant.",
+        findings: collectDuplicates(terminalMappingRows,
+          tmKeyed(function(row){ return norm(tmRes.terminalId ? row[tmRes.terminalId] : ""); }), tmDesc)
+          .filter(function(f){
+            var mids = {}; f.members.forEach(function(m){ mids[norm(m.mid)] = true; });
+            return Object.keys(mids).length > 1;
+          })
+      });
+      groups.push({
+        id: "tm_mid", severity: "info", sheet: "Terminal_Mapping",
+        title: "Repeated MID across different Terminal IDs",
+        detail: "Expected: one merchant normally operates several terminals. Listed for review only.",
+        findings: collectDuplicates(terminalMappingRows,
+          tmKeyed(function(row){ return norm(tmRes.mid ? row[tmRes.mid] : ""); }), tmDesc)
+      });
+    }
+
+    var counts = { error: 0, warning: 0, info: 0 };
+    groups.forEach(function(g){ counts[g.severity] += g.findings.length; });
+    return { groups: groups, counts: counts, hasBlocking: counts.error > 0 || counts.warning > 0 };
+  }
+
+  var SEVERITY_LABEL = { error: "Error", warning: "Warning", info: "Expected" };
+
+  function renderValidationPanel(){
+    var panel = els.validationPanel, bodyEl = els.validationBody;
+    if (!panel) return;
+    if (!state.masterListRows && !state.terminalMappingRows){ panel.hidden = true; return; }
+
+    var result = validateConfigDuplicates(state.masterListRows, state.terminalMappingRows);
+    state.configValidation = result;
+    panel.hidden = false;
+
+    var c = result.counts;
+    function plural(n, one, many){ return n + " " + (n === 1 ? one : many); }
+    var head = c.error > 0
+      ? '<div class="banner bad"><strong>' + plural(c.error, "duplicate lookup key", "duplicate lookup keys") + " found.</strong> Each one makes a configuration row unreachable — the payout report below is still generated from every transaction, but the rows listed here need fixing in the Master List workbook.</div>"
+      : (c.warning > 0
+        ? '<div class="banner warn"><strong>' + plural(c.warning, "mapping conflict", "mapping conflicts") + " found.</strong> Nothing is excluded from the payout report — review the rows below and decide what to correct.</div>"
+        : '<div class="banner sample"><strong>No duplicate lookup keys.</strong> Every Master_List MID + Merchant Key and every Terminal_Mapping MID + Terminal ID is unique. Expected repetitions (shared MIDs, multi-terminal merchants) are listed below for review.</div>');
+
+    var sections = result.groups.map(function(g){
+      var n = g.findings.length;
+      var badge = '<span class="chip ' + (g.severity === "error" ? "bad" : g.severity === "warning" ? "warn" : "ok") + '">' +
+        SEVERITY_LABEL[g.severity] + "</span>";
+      if (!n){
+        return '<details class="dup-group"><summary>' + badge + '<span class="dup-title">' + escapeHtml(g.title) +
+          '</span><span class="dup-count">none</span></summary><div class="dup-detail">' + escapeHtml(g.detail) + "</div></details>";
+      }
+      var rowsHtml = g.findings.slice(0, 50).map(function(f){
+        return f.members.map(function(m, i){
+          return "<tr" + (i === 0 ? ' class="dup-first"' : "") + ">" +
+            "<td>" + escapeHtml(m.sheet) + "</td>" +
+            "<td>" + m.rowNo + "</td>" +
+            "<td>" + escapeHtml(m.mid) + "</td>" +
+            "<td>" + escapeHtml(m.tid) + "</td>" +
+            "<td>" + escapeHtml(m.merchantKey) + "</td>" +
+            "<td>" + escapeHtml(m.merchantName) + "</td>" +
+            "<td>" + escapeHtml(m.accountCode) + "</td>" +
+            "<td>" + escapeHtml(m.status) + "</td>" +
+            "<td>" + escapeHtml(g.title) + " (" + f.members.length + " rows)</td>" +
+          "</tr>";
+        }).join("");
+      }).join("");
+      return '<details class="dup-group"' + (g.severity === "info" ? "" : " open") + "><summary>" + badge +
+        '<span class="dup-title">' + escapeHtml(g.title) + '</span><span class="dup-count">' + plural(n, "group", "groups") + "</span></summary>" +
+        '<div class="dup-detail">' + escapeHtml(g.detail) + "</div>" +
+        '<div class="table-scroll"><table><thead><tr>' +
+          "<th>Sheet</th><th>Row</th><th>MID</th><th>TID</th><th>Merchant Key</th><th>Merchant Name</th><th>Account Code</th><th>Status</th><th>Validation message</th>" +
+        "</tr></thead><tbody>" + rowsHtml + "</tbody></table></div>" +
+        (n > 50 ? '<div class="dup-detail">Showing the first 50 of ' + plural(n, "group", "groups") + ".</div>" : "") +
+      "</details>";
+    }).join("");
+
+    bodyEl.innerHTML = head +
+      '<div class="dup-note">Reference Number, Card Type 2 and Posting Date are OMS transaction fields and do not exist in the Master List, so they cannot be shown for a configuration duplicate. No row is removed, merged or modified — the uploaded data is reported exactly as it stands.</div>' +
+      sections;
+  }
 
   function renderMasterFileList(){
     els.masterFileList.innerHTML = state.masterFiles.map(function(f, i){
@@ -1089,6 +1527,7 @@
     state.cardTypesRows = firstMatch.card_types ? XLSX.utils.sheet_to_json(firstMatch.card_types, { defval: "" }) : null;
 
     renderSheetChecks();
+    renderValidationPanel();
     updateStepStates();
   }
 
@@ -1540,10 +1979,6 @@
     var body = els.payoutReportBody;
     body.innerHTML = "";
 
-    if (!report.accountCodeGroups.length){
-      body.innerHTML = '<div class="banner warn" style="margin:16px 20px;">No transactions resolved to a Master_List configuration row (via Terminal_Mapping + Merchant Key), so there is nothing to report yet. Check the Process Raw Details match-status column above.</div>';
-      return;
-    }
 
     var notice = document.createElement("div");
     notice.className = "banner warn";
@@ -1557,9 +1992,29 @@
       (report.excludedByFrequencyCount > 0 ? ("<br>" + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency and are excluded from this report.") : "");
     body.appendChild(notice);
 
+    var dash = document.createElement("div");
+    dash.style.margin = "0 20px 4px";
+    dash.innerHTML = renderDashboard(report, state.frequency);
+    body.appendChild(dash);
+
+    // No merchant matched the selected payout frequency: the dashboard above still renders, showing
+    // a genuine zero for every payment category, but there is no report table to draw.
+    if (!report.accountCodeGroups.length){
+      var none = document.createElement("div");
+      none.className = "banner warn";
+      none.style.margin = "16px 20px";
+      none.innerHTML = "No merchant produced a report line for <strong>" + escapeHtml(state.frequency || "") + "</strong>. " +
+        "Either no transaction resolved to a Master_List row (via Terminal_Mapping + Merchant Key), or every resolved merchant is tagged with a different Payout Frequency. " +
+        "Check the Process Raw Details match-status column above." +
+        (report.unresolvedCount > 0 ? (" " + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row.") : "") +
+        (report.excludedByFrequencyCount > 0 ? (" " + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency.") : "");
+      body.appendChild(none);
+      return;
+    }
+
     var summary = document.createElement("div");
     summary.className = "summary-grid";
-    summary.style.margin = "0 20px 16px";
+    summary.style.margin = "16px 20px 16px";
     summary.innerHTML =
       statTile(report.merchantLines.length, "Report Lines", "") +
       statTile(fmtAmount(report.grandTotal.totalProfit), "Total Noqoody Profit", "ok") +
@@ -1625,7 +2080,6 @@
       var subTr = document.createElement("tr");
       subTr.className = "subtotal-row";
       subTr.style.background = "var(--surface-2)";
-      subTr.style.fontWeight = "600";
       subTr.innerHTML =
         stickyLabelTd("SUBTOTAL — Account Code " + escapeHtml(group.accountCode)) +
         groupCellsHtml(group.subtotal.groups, true) +
@@ -1636,7 +2090,6 @@
     var grandTr = document.createElement("tr");
     grandTr.className = "grandtotal-row";
     grandTr.style.background = "var(--accent-soft)";
-    grandTr.style.fontWeight = "700";
     grandTr.innerHTML =
       stickyLabelTd("GRAND TOTAL — ALL ACCOUNT CODES") +
       groupCellsHtml(report.grandTotal.groups, true) +
@@ -1646,6 +2099,14 @@
     table.appendChild(tbody);
     scroll.appendChild(table);
     body.appendChild(scroll);
+
+    // Wrapped headers have no fixed height, so the sticky offsets are measured from the rendered
+    // rows rather than assumed: the column-header row sits below the group row, and the Account Code
+    // section label sits below both.
+    var grpH = groupRow.getBoundingClientRect().height;
+    var headH = headRow.getBoundingClientRect().height;
+    table.style.setProperty("--grp-h", grpH + "px");
+    table.style.setProperty("--head-h", (grpH + headH) + "px");
 
     Array.prototype.forEach.call(body.querySelectorAll(".report-input"), function(input){
       input.addEventListener("change", function(){
@@ -1682,6 +2143,36 @@
     var s = { fill: { fgColor: { rgb: "FF" + c.fill } }, font: {} };
     if (c.font) s.font.color = { rgb: "FF" + c.font };
     ws[addr].s = s;
+  }
+
+  // Column headers are bold and wrap onto as many lines as the label needs, so a long name like
+  // "Transfer Deducted (Rent, Others)" stays fully readable instead of being clipped by the next
+  // column. Applied to every header cell in a section — coloured or not — so a header row is
+  // formatted consistently across all Card Type sections, the reconciliation block and the totals.
+  function styleHeaderCell(ws, addr, colorKey){
+    var cell = ws[addr];
+    if (!cell) return;
+    var c = colorKey ? XLCOLOR[colorKey] : null;
+    var st = {
+      font: { bold: true },
+      alignment: { wrapText: true, vertical: "center", horizontal: "center" }
+    };
+    if (c){
+      st.fill = { fgColor: { rgb: "FF" + c.fill } };
+      if (c.font) st.font.color = { rgb: "FF" + c.font };
+    }
+    cell.s = st;
+  }
+
+  // Totals and section labels: bold, left-aligned, no wrap (the label cell is merged across No./MID/
+  // Merchant and has room), so they read as headers without disturbing the numeric columns.
+  function styleBoldCell(ws, addr){
+    var cell = ws[addr];
+    if (!cell) return;
+    var existing = cell.s || {};
+    existing.font = existing.font || {};
+    existing.font.bold = true;
+    cell.s = existing;
   }
 
   var XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -1789,11 +2280,17 @@
     function pushRow(arr, level){ rows.push(arr); rowLevels.push(level || 0); return rows.length - 1; }
     function addMerge(r, c1, c2){ if (c2 > c1) merges.push({ s: { r: r, c: c1 }, e: { r: r, c: c2 } }); }
 
+    var groupHeaderRowIdxs = []; // the CARD TYPE / FINAL RECONCILIATION / TRANSFER banner rows
+    var labelRowIdxs = [];       // the "Account Code N" section label rows
+    var subtotalRowIdxs = [];
+
     report.accountCodeGroups.forEach(function(group){
       var labelRowIdx = pushRow(["Account Code " + group.accountCode], 0);
+      labelRowIdxs.push(labelRowIdx);
       addMerge(labelRowIdx, 0, finalStartCol + FINAL_COLS.length - 1);
 
       var groupHeaderRowIdx = pushRow(buildGroupHeaderRow(), 0);
+      groupHeaderRowIdxs.push(groupHeaderRowIdx);
       var gc = leadCols;
       report.paymentGroups.forEach(function(pg){
         addMerge(groupHeaderRowIdx, gc, gc + GROUP_SUBCOLS.length - 1);
@@ -1815,6 +2312,7 @@
       });
       var subRowIdx = pushRow(lineToRow(["SUBTOTAL — Account Code " + group.accountCode, "", ""], group.subtotal.groups, group.subtotal), 0);
       addMerge(subRowIdx, 0, 2);
+      subtotalRowIdxs.push(subRowIdx);
       sections.push({ dataRows: sectionDataRows, mainRowSpans: mainRowSpans, subtotalRowIdx: subRowIdx });
     });
 
@@ -1823,7 +2321,15 @@
 
     var reportSheet = XLSX.utils.aoa_to_sheet(rows);
     reportSheet["!merges"] = merges;
-    reportSheet["!rows"] = rowLevels.map(function(level){ return level > 0 ? { level: level } : {}; });
+    // Header rows get an explicit height: a wrapped label needs the room, and Excel does not
+    // auto-fit a row whose height was never written. 46pt fits three wrapped lines at the default
+    // font size, which covers the longest label in the report ("Transfer Deducted (Rent, Others)").
+    var COL_HEADER_ROW_HPT = 46;
+    reportSheet["!rows"] = rowLevels.map(function(level, i){
+      var r = level > 0 ? { level: level } : {};
+      if (colHeaderRowIdxs.indexOf(i) !== -1) r.hpt = COL_HEADER_ROW_HPT;
+      return r;
+    });
 
     // Column Type toggles: within each payment group, Gross Collection (the headline figure) stays
     // permanently visible; the other 10 columns are hidden by default and share one outline group,
@@ -1960,18 +2466,42 @@
       }
     });
 
-    // Column header colors — applied identically to every repeated Card Type section header row.
+    // Column header formatting — bold and wrapped on every header cell, with the reference export's
+    // colors on the ones that carry them. Applied identically to each repeated Card Type section
+    // header row, and to the reconciliation and transfer blocks, so the whole row is consistent.
     colHeaderRowIdxs.forEach(function(r){
-      styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 0 }), HEADER_COLOR_BY_KEY.number);
-      styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 1 }), HEADER_COLOR_BY_KEY.mid);
-      styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 2 }), HEADER_COLOR_BY_KEY.merchant);
+      // Start from the whole row so the reconciliation and transfer headers — which carry no fill —
+      // still get the bold + wrap treatment, then overlay the colored ones.
+      for (var c = 0; c < totalExportCols; c++){
+        styleHeaderCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: c }), null);
+      }
+      styleHeaderCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 0 }), HEADER_COLOR_BY_KEY.number);
+      styleHeaderCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 1 }), HEADER_COLOR_BY_KEY.mid);
+      styleHeaderCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 2 }), HEADER_COLOR_BY_KEY.merchant);
       var col = leadCols;
       report.paymentGroups.forEach(function(){
         GROUP_SUBCOLS.forEach(function(subcol, i){
-          styleCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: col + i }), HEADER_COLOR_BY_KEY[GROUP_COL_KEYS[i]]);
+          styleHeaderCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: col + i }), HEADER_COLOR_BY_KEY[GROUP_COL_KEYS[i]]);
         });
         col += colsPerGroup;
       });
+    });
+
+    // Section banner rows (CARD TYPE / FINAL RECONCILIATION / TRANSFER) and the Account Code labels.
+    groupHeaderRowIdxs.forEach(function(r){
+      for (var c = 0; c < totalExportCols; c++){
+        styleHeaderCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: c }), null);
+      }
+    });
+    labelRowIdxs.forEach(function(r){
+      styleBoldCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: 0 }));
+    });
+
+    // Subtotal and Grand Total rows are bold across every column, label and figures alike.
+    subtotalRowIdxs.concat([grandRowIdx]).forEach(function(r){
+      for (var c = 0; c < totalExportCols; c++){
+        styleBoldCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: c }));
+      }
     });
 
     var prdExportRows = buildProcessRawDetailsExportRows(state.result.processed);

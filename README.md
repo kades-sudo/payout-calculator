@@ -138,3 +138,129 @@ Wallet Classification and Classification are displayed as columns with a **rule 
 - **Below Amount calculation** (unchanged, re-verified): `Noqoody Charge Per Txn` is `0` on the main row and `Cleared Txn × Merchant Rate Per Txn` on the Below Amount row, and flows into that row's Noqoody Profit and Internal Transfer.
 
 Verified in both the web app and the exported workbook (identical order and numbering in each), with a targeted negative test: a merchant with a Below Amount Rule of 25 whose transactions are all exactly 25 produces no Below Amount row anywhere, while its main row still appears. All 1,726 exported formulas still evaluate to their cached values after the reorder, and the column widths, outline toggles, freeze pane and number formats remain intact.
+
+## Header formatting, duplicate MID/TID validation, and the payout dashboard
+
+**Audit status: PENDING VERIFICATION** — implemented and tested against the real Masterlist and a
+3,707-row OMS dataset, but not yet confirmed against a production payout run. Open items are listed
+at the end of this section.
+
+### 1. Section column header formatting
+
+Column headers wrap onto as many lines as the label needs and are bold everywhere they appear, in
+both the web Grid View and the exported workbook, for every Card Type section, the Final
+Reconciliation block and the Transfer block.
+
+- **Web**: `.report-table thead th` sets `white-space:normal` + `font-weight:700`. Because the two
+  header rows are `position:sticky`, their offsets can no longer be hard-coded once the text wraps to
+  a variable height — `renderPayoutReport` measures both rendered rows and publishes `--grp-h` /
+  `--head-h`, which the column-header row and the Account Code section label sticky offsets read.
+  Measured on the real dataset: group row 32px, column row 74px, so the section label sticks at
+  106.25px, exactly below both.
+- **Excel**: header cells carry `font.bold` + `alignment.wrapText/vertical/horizontal`, and the header
+  rows get an explicit `hpt: 46` — Excel does not auto-fit a row whose height was never written, so
+  without this a wrapped header is clipped. 46pt fits three wrapped lines, covering the longest label
+  in the report (`Transfer Deducted (Rent, Others)`).
+- Subtotal rows, the Grand Total row and the Account Code label rows are bold across every column.
+  `styleBoldCell` **merges** into any existing style rather than replacing it, so the number formats
+  (`#,##0.00`, `0.00%`, `#,##0`) survive alongside the bold.
+
+Verified by unzipping the generated workbook: `cellXfs` 4–10 all carry `wrapText="true"`, fonts 2–11
+all carry `<b/>`, header rows 3 and 10 carry `ht="46" customHeight="1"`. Note that reading the file
+back through SheetJS does **not** round-trip `.s`, so a read-back assertion reports no styles even
+when the file is correct — the XML is the source of truth here.
+
+### 2. Duplicate MID / TID validation (Master List, not the OMS file)
+
+Runs during the validation stage, as soon as the Master List workbook is parsed and therefore before
+any payout report is generated. **Nothing is removed, merged or rewritten** — rows are reported
+exactly as uploaded, and no transaction is excluded from the payout calculation as a result.
+
+Severity reflects what each repetition actually does to the lookups:
+
+| Severity | Check | Why |
+|---|---|---|
+| Error | Master_List duplicate **MID + Merchant Key** | `buildMasterListIndex` keys on this pair; the last row silently wins and the others are unreachable |
+| Error | Terminal_Mapping duplicate **MID + Terminal ID** | `buildTerminalMapIndex` keys on this pair; the first row wins, so a different Merchant Key or Account Code on later rows is ignored |
+| Warning | One **Terminal ID** under more than one MID | A terminal's payouts could be attributed to the wrong merchant |
+| Expected | Repeated **MID** across different Merchant Keys | The shared-MID case — several merchants trading under one physical MID |
+| Expected | Repeated **MID** across different Terminal IDs | One merchant normally operates several terminals |
+
+A plain "duplicate MID" check was deliberately **not** implemented against the OMS raw file: measured
+on the real 3,707-row dataset it flags 3,688 rows (99.5%) and 3,655 TID rows (98.6%), because every
+merchant naturally has many transactions. Reference Number is unique across all 3,707 rows there.
+
+Reference Number, Card Type 2 and Posting Date are OMS transaction fields and do not exist in the
+Master List, so they cannot be shown for a configuration duplicate; the panel states this.
+
+**Finding on the supplied Masterlist**: `Terminal_Mapping` rows 213 and 429 are byte-identical
+duplicate rows (MID `100005269900174`, TID `10034075`, Account Code 15). Harmless today because both
+rows carry the same values, but it is a genuine duplicate and is reported as an Error. No duplicate
+`MID + Merchant Key` exists in `Master_List`.
+
+### 3. Payout dashboard
+
+Icon-led stat tiles rendered above the report table, recomputed on every upload, frequency change and
+reprocess (it is built inside `renderPayoutReport`, so it cannot drift from the table below it).
+
+- **Categories are read from the `Card_Types` sheet at run time**, never hardcoded. Adding a row there
+  adds a report section *and* a dashboard card with the same formulas, formatting, subtotal logic and
+  dashboard integration, with no code change. `Others` collects every Card Type 2 present in the data
+  that no `Card_Types` row defines.
+- **Reference field**: `DASHBOARD_REFERENCE_FIELD` is set to `cardType2` **temporarily**, because
+  `Classification` is not yet populated by the pipeline (`runPipeline` sets it to `""`). It is a
+  single switch — point it at `classification` once that lookup rule exists.
+- **Transaction Count** = cleared (Sale) transactions only, matching the report's own `Cleared Txn`.
+- **Total Payout Amount** = `Internal Transfer` per category; the three headline tiles are Cleared
+  Transactions, Total Payout Amount (Total Internal Transfer) and Total Profit (Total Noqoody Profit).
+- **No double counting**: every figure is summed from `report.merchantLines` — never from a subtotal
+  row, the Grand Total row or the Merchant Reconciliation block. Main and Below Amount rows are both
+  merchant lines and are each included exactly once.
+- Icons are inline SVG, one distinct glyph per category, with a stable hash-based fallback so a newly
+  added Card Type gets its own consistent glyph without a code change.
+- Stat-tile values use the font's proportional figures (`tabular-nums` is reserved for the aligned
+  columns of the report table).
+
+**`Others` is structurally zero on the payout tiles and that is correct**: a Card Type 2 with no
+`Card_Types` row has no merchant rate, no bank cost column and no report section, so it never enters
+an Internal Transfer or Profit calculation anywhere in the report. A non-zero Others *count* with a
+0.00 Others *amount* is therefore a data-quality signal, and the app says so explicitly, naming the
+excluded gross and the offending Card Type 2 values.
+
+### 4. Dashboard reconciliation
+
+Four checks re-derive each dashboard total from the merchant lines and compare it with the figure the
+report itself publishes; any failure renders a blocking banner rather than showing a wrong number.
+
+Verified on the real dataset (Daily and Weekly): all eight category cards and all three headline
+figures match the independently re-summed table rows *and* the Grand Total row
+(553 + 887 + 123 = 1,563 cleared; 66,464.23 total payout; −208.96 total profit).
+
+The checks were also **negative-tested** so they are not vacuous: perturbing the grand-total transfer,
+the grand-total profit, the Sale count, and an Account Code subtotal each fires exactly one check and
+renders the banner.
+
+### Testing performed
+
+- Daily and Weekly payout data. The supplied Masterlist has no Weekly merchants (51 Daily, 204 blank),
+  so a Weekly-tagged variant was generated to exercise the Weekly path with the same real data; both
+  reconcile with zero mismatches.
+- Empty-frequency case: the dashboard now renders with genuine zeros in every category instead of the
+  panel showing nothing, with a banner explaining why there is no table.
+- `Others`: a fixture retagging 37 Sale rows to a card type the classification sheet does not define.
+  Totals stay at 1,563 (518 + 885 + 123 + 37), proving no double counting, and Others is flagged.
+- Merchants with and without Below Amount Rules, including the negative case (a rule configured but no
+  transaction below it produces no Below row).
+- Export regression: 1,726 / 1,726 formulas still evaluate to their cached values; 114 columns all
+  with explicit widths; 80 hidden columns; freeze pane (`xSplit="3"`) and
+  `sheetFormatPr outlineLevelRow/outlineLevelCol` (the +/- toggles) intact.
+- Layout: no horizontal page overflow at 1500px or at 430px (phone) width.
+- A missing `<meta charset="utf-8">` was found and added — without it the em dashes in the app's
+  notices render as mojibake depending on how the page is served.
+
+### Still open after this update
+
+- `Classification` and `Wallet Classification` lookup rules — still undefined, so still not invented.
+  The dashboard grouping switches to `Classification` via one constant once they exist.
+- `Special_Rate` (Account Code 5) overrides — still unimplemented.
+- Production verification of the dashboard totals and the duplicate report against a real payout run.
