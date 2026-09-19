@@ -1,0 +1,897 @@
+<title>Payout Calculator</title>
+<meta name="description" content="Phase 1: automated OMS transaction enrichment, master-list matching, and Process Raw Details generation.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<style>
+  :root{
+    --bg:#EEF1EF; --surface:#FFFFFF; --surface-2:#F7F9F7; --border:#D7DEDA;
+    --ink:#16211B; --ink-muted:#5C6B62;
+    --accent:#245C4B; --accent-soft:#DCEAE4; --accent-contrast:#FFFFFF;
+    --warn:#9A6324; --warn-soft:#F4E3CB;
+    --danger:#A23B2E; --danger-soft:#F5DCD6;
+    --ok:#2E7D4F; --ok-soft:#DCEEE0;
+    --pending:#5C6B62; --pending-soft:#E4E8E5;
+    --shadow: 0 1px 2px rgba(22,33,27,0.06), 0 8px 24px -12px rgba(22,33,27,0.18);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0E1512; --surface:#141D19; --surface-2:#1A2420; --border:#2A3832;
+      --ink:#E7ECE8; --ink-muted:#9AACA1;
+      --accent:#58B79A; --accent-soft:#1D3A31; --accent-contrast:#06110D;
+      --warn:#E0A855; --warn-soft:#3A2C15;
+      --danger:#E28677; --danger-soft:#3B1E19;
+      --ok:#6FCB8F; --ok-soft:#163420;
+      --pending:#9AACA1; --pending-soft:#212B26;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0E1512; --surface:#141D19; --surface-2:#1A2420; --border:#2A3832;
+    --ink:#E7ECE8; --ink-muted:#9AACA1;
+    --accent:#58B79A; --accent-soft:#1D3A31; --accent-contrast:#06110D;
+    --warn:#E0A855; --warn-soft:#3A2C15;
+    --danger:#E28677; --danger-soft:#3B1E19;
+    --ok:#6FCB8F; --ok-soft:#163420;
+    --pending:#9AACA1; --pending-soft:#212B26;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    padding-inline:20px; padding-block:28px 48px;
+    display:flex; justify-content:center;
+  }
+  .app{ width:100%; max-width:1180px; display:flex; flex-direction:column; gap:22px; }
+
+  header.page-head{ display:flex; flex-direction:column; gap:6px; }
+  .eyebrow{
+    font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:12px; letter-spacing:0.09em;
+    text-transform:uppercase; color:var(--accent); font-weight:500;
+  }
+  h1{
+    font-family:"IBM Plex Sans Condensed", ui-sans-serif, sans-serif;
+    font-weight:700; font-size:clamp(26px,4vw,34px); margin:0; letter-spacing:-0.01em;
+    text-wrap:balance;
+  }
+  .subtitle{ color:var(--ink-muted); font-size:14.5px; max-width:62ch; line-height:1.5; }
+
+  .layout{ display:grid; grid-template-columns: 340px 1fr; gap:20px; align-items:start; }
+  @media (max-width: 860px){ .layout{ grid-template-columns: 1fr; } }
+
+  .panel{
+    background:var(--surface); border:1px solid var(--border); border-radius:14px;
+    box-shadow:var(--shadow);
+  }
+
+  /* ---- Stepper rail ---- */
+  .rail{ display:flex; flex-direction:column; }
+  .step{ padding:18px 18px; border-bottom:1px solid var(--border); display:flex; gap:12px; }
+  .step:last-child{ border-bottom:none; }
+  .step-badge{
+    flex:none; width:26px; height:26px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-family:"IBM Plex Mono",monospace; font-size:12px; font-weight:600;
+    background:var(--pending-soft); color:var(--pending); border:1px solid var(--border);
+    transition:background .2s,color .2s,border-color .2s;
+  }
+  .step.done .step-badge{ background:var(--ok-soft); color:var(--ok); border-color:transparent; }
+  .step-body{ flex:1; min-width:0; display:flex; flex-direction:column; gap:8px; }
+  .step-title{ font-weight:600; font-size:14.5px; }
+  .step-hint{ color:var(--ink-muted); font-size:12.5px; line-height:1.45; }
+
+  .file-drop{
+    border:1.5px dashed var(--border); border-radius:10px; padding:12px; text-align:center;
+    font-size:12.5px; color:var(--ink-muted); cursor:pointer; background:var(--surface-2);
+    transition:border-color .15s,background .15s;
+  }
+  .file-drop:hover, .file-drop:focus-within{ border-color:var(--accent); background:var(--accent-soft); }
+  .file-drop input{ position:absolute; width:1px; height:1px; opacity:0; overflow:hidden; }
+  .file-list{ display:flex; flex-direction:column; gap:4px; margin-top:6px; }
+  .file-chip{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    font-size:12px; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:8px; padding:5px 9px;
+  }
+  .file-chip button{
+    border:none; background:none; color:var(--ink-muted); cursor:pointer; font-size:14px; line-height:1; padding:2px;
+  }
+  .file-chip button:hover{ color:var(--danger); }
+
+  .sheet-check{ font-size:12px; display:flex; gap:6px; align-items:baseline; }
+  .sheet-check.ok{ color:var(--ok); } .sheet-check.bad{ color:var(--danger); }
+
+  .freq-group{ display:flex; gap:8px; }
+  .freq-btn{
+    flex:1; padding:9px 10px; border-radius:9px; border:1px solid var(--border);
+    background:var(--surface-2); color:var(--ink); font-size:13.5px; font-weight:500; cursor:pointer;
+    font-family:inherit;
+  }
+  .freq-btn[aria-pressed="true"]{ background:var(--accent); border-color:var(--accent); color:var(--accent-contrast); }
+
+  .sample-link{
+    font-size:12px; color:var(--accent); background:none; border:none; text-decoration:underline;
+    cursor:pointer; padding:0; text-align:left; font-family:inherit;
+  }
+
+  .btn{
+    font-family:"IBM Plex Sans Condensed", sans-serif; font-weight:600; font-size:14.5px;
+    padding:12px 16px; border-radius:10px; border:1px solid transparent; cursor:pointer;
+    letter-spacing:0.01em; display:flex; align-items:center; justify-content:center; gap:8px;
+  }
+  .btn-primary{ background:var(--accent); color:var(--accent-contrast); }
+  .btn-primary:disabled{ background:var(--pending-soft); color:var(--pending); cursor:not-allowed; border-color:var(--border); }
+  .btn-secondary{ background:var(--surface); color:var(--ink); border-color:var(--border); }
+  .btn-secondary:hover{ border-color:var(--accent); color:var(--accent); }
+  .btn-secondary:disabled{ opacity:0.5; cursor:not-allowed; }
+  .process-wrap{ padding:18px; display:flex; flex-direction:column; gap:8px; }
+  .process-note{ font-size:11.5px; color:var(--ink-muted); text-align:center; }
+
+  /* ---- Right column ---- */
+  .right-col{ display:flex; flex-direction:column; gap:18px; }
+
+  .pipeline{ padding:18px 20px; display:flex; flex-direction:column; gap:12px; }
+  .pipeline-title{ font-weight:600; font-size:13.5px; display:flex; align-items:center; gap:8px; }
+  .pipeline-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:0; }
+  .pipeline-list li{
+    display:flex; align-items:center; gap:10px; font-size:13px; padding:7px 2px;
+    color:var(--ink-muted); border-left:2px solid var(--border); padding-left:14px; margin-left:9px;
+  }
+  .pipeline-list li:last-child{ border-left-color:transparent; }
+  .pipeline-list li .dot{
+    flex:none; width:9px; height:9px; border-radius:50%; background:var(--border); margin-left:-19px;
+    border:2px solid var(--surface);
+  }
+  .pipeline-list li.active{ color:var(--ink); font-weight:500; }
+  .pipeline-list li.active .dot{ background:var(--accent); }
+  .pipeline-list li.done{ color:var(--ink); }
+  .pipeline-list li.done .dot{ background:var(--ok); }
+  .pipeline-list li.pending-rule .dot{ background:var(--warn); }
+  .pipeline-list li .tag{
+    font-family:"IBM Plex Mono",monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.06em;
+    background:var(--warn-soft); color:var(--warn); padding:2px 6px; border-radius:5px; margin-left:auto;
+  }
+
+  .empty-state{
+    padding:56px 24px; text-align:center; color:var(--ink-muted); display:flex; flex-direction:column;
+    align-items:center; gap:10px; font-size:13.5px;
+  }
+  .empty-state svg{ opacity:0.5; }
+
+  .summary-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  @media (max-width:700px){ .summary-grid{ grid-template-columns:repeat(2,1fr); } }
+  .stat-tile{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 16px;
+    display:flex; flex-direction:column; gap:4px; box-shadow:var(--shadow);
+  }
+  .stat-value{ font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; font-size:24px; font-weight:600; }
+  .stat-label{ font-size:11.5px; color:var(--ink-muted); text-transform:uppercase; letter-spacing:0.06em; }
+  .stat-tile.warn .stat-value{ color:var(--warn); }
+  .stat-tile.ok .stat-value{ color:var(--ok); }
+
+  .results-panel{ display:flex; flex-direction:column; }
+  .results-head{
+    padding:16px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center;
+    justify-content:space-between; gap:12px; flex-wrap:wrap;
+  }
+  .results-title{ font-weight:600; font-size:14.5px; display:flex; align-items:center; gap:8px; }
+  .results-title .count{ color:var(--ink-muted); font-weight:400; font-size:12.5px; }
+  .head-actions{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+
+  .table-scroll{ overflow-x:auto; max-height:520px; overflow-y:auto; }
+  table{ border-collapse:collapse; width:100%; font-size:12.5px; }
+  thead th{
+    position:sticky; top:0; background:var(--surface-2); text-align:left; padding:9px 12px;
+    font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.045em; color:var(--ink-muted);
+    border-bottom:1px solid var(--border); white-space:nowrap; z-index:1;
+  }
+  thead th .pending-mark{
+    font-family:"IBM Plex Mono",monospace; font-size:9px; color:var(--warn); text-transform:none;
+    letter-spacing:0; display:block; font-weight:500;
+  }
+  tbody td{ padding:8px 12px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  tbody td.num{ font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; text-align:right; }
+  tbody tr:hover{ background:var(--surface-2); }
+  tbody tr.unmatched{ background:var(--danger-soft); }
+  tbody tr.unmatched:hover{ background:var(--danger-soft); filter:brightness(0.97); }
+  .chip{
+    display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:500;
+    padding:3px 8px; border-radius:99px;
+  }
+  .chip.ok{ background:var(--ok-soft); color:var(--ok); }
+  .chip.bad{ background:var(--danger-soft); color:var(--danger); }
+  .chip.pending{ background:var(--pending-soft); color:var(--pending); font-family:"IBM Plex Mono",monospace; font-size:10px; }
+
+  .banner{
+    margin:0 20px 16px; padding:10px 14px; border-radius:10px; font-size:12.5px; display:flex; gap:10px; align-items:flex-start;
+  }
+  .banner.sample{ background:var(--accent-soft); color:var(--accent); }
+  .banner.warn{ background:var(--warn-soft); color:var(--warn); }
+
+  footer{ text-align:center; color:var(--ink-muted); font-size:11.5px; padding-top:6px; }
+  footer a{ color:inherit; }
+
+  [hidden]{ display:none !important; }
+  button:focus-visible, .file-drop:focus-within, .freq-btn:focus-visible{
+    outline:2px solid var(--accent); outline-offset:2px;
+  }
+  @media (prefers-reduced-motion: no-preference){
+    .step-badge, .pipeline-list li .dot{ transition:all .25s ease; }
+  }
+</style>
+
+<div class="app">
+  <header class="page-head">
+    <span class="eyebrow">Phase 1 · Process Raw Details</span>
+    <h1>Payout Calculator</h1>
+    <p class="subtitle">Upload the master list, choose a payout frequency, and drop in the OMS raw transaction export. Processing — card type lookup, card type 2 lookup, and merchant matching — runs automatically the moment you click Process Payout.</p>
+  </header>
+
+  <div class="layout">
+    <!-- LEFT: workflow rail -->
+    <div class="panel rail">
+      <div class="step" id="step1">
+        <div class="step-badge">1</div>
+        <div class="step-body">
+          <div class="step-title">Upload Master List / Configuration</div>
+          <div class="step-hint">Workbook(s) containing a <strong>Master_List</strong> sheet (MID → Merchant Name) and a <strong>Card Type Classification</strong> sheet.</div>
+          <label class="file-drop" for="masterFiles">
+            <input type="file" id="masterFiles" accept=".xlsx,.xls,.csv" multiple>
+            Click to upload workbook(s) (.xlsx)
+          </label>
+          <div class="file-list" id="masterFileList"></div>
+          <div id="sheetChecks"></div>
+        </div>
+      </div>
+
+      <div class="step" id="step2">
+        <div class="step-badge">2</div>
+        <div class="step-body">
+          <div class="step-title">Payout Frequency</div>
+          <div class="step-hint">Used to label the processed batch and the downloaded file.</div>
+          <div class="freq-group" role="group" aria-label="Payout frequency">
+            <button type="button" class="freq-btn" id="freqDaily" aria-pressed="false">Daily</button>
+            <button type="button" class="freq-btn" id="freqWeekly" aria-pressed="false">Weekly</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" id="step3">
+        <div class="step-badge">3</div>
+        <div class="step-body">
+          <div class="step-title">Upload OMS Raw Transaction File</div>
+          <div class="step-hint">16-column OMS export: reference number through text message.</div>
+          <label class="file-drop" for="omsFile">
+            <input type="file" id="omsFile" accept=".xlsx,.xls,.csv">
+            Click to upload OMS file
+          </label>
+          <div class="file-list" id="omsFileList"></div>
+        </div>
+      </div>
+
+      <div class="process-wrap">
+        <button class="btn btn-primary" id="processBtn" disabled>Process Payout</button>
+        <span class="process-note">Runs card type, card type 2 &amp; merchant lookups automatically</span>
+        <button class="sample-link" id="sampleBtn" type="button">Or load example data to try it out →</button>
+      </div>
+    </div>
+
+    <!-- RIGHT: pipeline + results -->
+    <div class="right-col">
+      <div class="panel pipeline">
+        <div class="pipeline-title">Processing pipeline</div>
+        <ol class="pipeline-list" id="pipelineList">
+          <li data-step="cardtype"><span class="dot"></span>Card Type lookup</li>
+          <li data-step="cardtype2"><span class="dot"></span>Card Type 2 lookup</li>
+          <li data-step="merchant"><span class="dot"></span>Merchant lookup (MID → Master_List)</li>
+          <li data-step="wallet" class="pending-rule"><span class="dot"></span>Wallet Classification lookup<span class="tag">rule pending</span></li>
+          <li data-step="classification" class="pending-rule"><span class="dot"></span>Classification lookup<span class="tag">rule pending</span></li>
+          <li data-step="build"><span class="dot"></span>Create Process Raw Details</li>
+        </ol>
+      </div>
+
+      <div class="panel results-panel" id="resultsPanel">
+        <div class="empty-state" id="emptyState">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16"/></svg>
+          <div>No Process Raw Details yet.<br>Complete steps 1–3 on the left, then click <strong>Process Payout</strong>.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>Phase 1 scope: card type &amp; merchant lookups, Process Raw Details generation and verification download. Wallet Classification, Classification and payout calculation follow in later phases.</footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------------- state ---------------- */
+  var state = {
+    masterFiles: [],          // [{name, workbook}]
+    masterListRows: null,     // parsed Master_List sheet rows (objects)
+    cardTypeMap: null,        // Map(normalizedKey -> {cardType, cardType2})
+    frequency: null,
+    omsFile: null,            // {name, rows}
+    isSample: false,
+    result: null              // {processed, unmatchedMerchants, unmatchedCardTypeCount}
+  };
+
+  var downloadsApi = null;
+  if (window.claude && window.claude.use) {
+    window.claude.use("downloads").then(function(api){ downloadsApi = api; updateProcessAvailability(); });
+  }
+
+  /* ---------------- helpers ---------------- */
+  function norm(s){
+    return (s === undefined || s === null) ? "" : String(s).trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
+  var FIELD_CANDIDATES = {
+    referenceNumber: ["referencenumber", "refno", "referenceno"],
+    merchantId: ["merchantid", "mid"],
+    location: ["location"],
+    terminalId: ["terminalid", "tid"],
+    transactionType: ["transactiontype"],
+    transactionDate: ["transactiondate"],
+    transactionTime: ["transactiontime"],
+    postingDate: ["postingdate"],
+    grossAmount: ["grossamount"],
+    commission: ["commission"],
+    netAmount: ["netamount"],
+    cardNumber: ["cardnumber"],
+    cardTypeOnOff: ["cardtypeonusoffus", "cardtypeonoffus", "cardtype"],
+    approvedCode: ["approvedcode"],
+    invoiceNo: ["invoiceno", "invoicenumber"],
+    textMessage: ["textmessage"]
+  };
+  var MASTER_MID_CANDIDATES = ["mid", "merchantid"];
+  var MASTER_NAME_CANDIDATES = ["merchantname", "merchant", "name"];
+
+  function buildResolver(headers, candidateMap){
+    var normHeaders = headers.map(norm);
+    var resolver = {};
+    Object.keys(candidateMap).forEach(function(field){
+      var candidates = candidateMap[field];
+      var idx = -1;
+      for (var c = 0; c < candidates.length && idx === -1; c++){
+        idx = normHeaders.indexOf(candidates[c]);
+      }
+      resolver[field] = idx === -1 ? null : headers[idx];
+    });
+    return resolver;
+  }
+
+  function resolveSingle(headers, candidates){
+    var normHeaders = headers.map(norm);
+    for (var c = 0; c < candidates.length; c++){
+      var idx = normHeaders.indexOf(candidates[c]);
+      if (idx !== -1) return headers[idx];
+    }
+    return null;
+  }
+
+  function findSheet(workbook, nameCandidates){
+    for (var i = 0; i < workbook.SheetNames.length; i++){
+      var n = norm(workbook.SheetNames[i]);
+      if (nameCandidates.indexOf(n) !== -1) return workbook.Sheets[workbook.SheetNames[i]];
+    }
+    return null;
+  }
+
+  function readWorkbook(file){
+    return file.arrayBuffer().then(function(buf){
+      return XLSX.read(buf, { type: "array", cellDates: true });
+    });
+  }
+
+  function toISODate(v){
+    if (v instanceof Date && !isNaN(v)) {
+      return v.getFullYear() + "-" + String(v.getMonth()+1).padStart(2,"0") + "-" + String(v.getDate()).padStart(2,"0");
+    }
+    if (typeof v === "string" && v.trim()){
+      var d = new Date(v);
+      if (!isNaN(d)) return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+    }
+    return null;
+  }
+
+  function displayDate(v){
+    if (v instanceof Date && !isNaN(v)) return v.toLocaleDateString();
+    return (v === undefined || v === null) ? "" : String(v);
+  }
+
+  function fmtAmount(v){
+    if (v === undefined || v === null || v === "") return "";
+    var n = Number(v);
+    if (isNaN(n)) return String(v);
+    return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function escapeHtml(s){
+    return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function(c){
+      return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c];
+    });
+  }
+
+  /* ---------------- sample data ---------------- */
+  function sampleWorkbookData(){
+    var masterListRows = [
+      { MID: "100234", "Merchant Name": "Sunrise Grocery Mart" },
+      { MID: "100567", "Merchant Name": "Pacific Coffee Roasters" },
+      { MID: "100891", "Merchant Name": "Everwell Pharmacy" },
+      { MID: "101045", "Merchant Name": "Northgate Auto Parts" },
+      { MID: "101322", "Merchant Name": "Blue Harbor Seafood" }
+      // 101999 intentionally omitted to demonstrate an unmatched MID
+    ];
+    // Card Type Classification: col A = lookup key, C = Card Type 2, E = Card Type (per VLOOKUP A:E / A:C)
+    var cardTypeMatrix = [
+      ["Lookup Key", "B", "Card Type 2", "D", "Card Type"],
+      ["VISA-ON US", "", "Bank-Issued", "", "Credit Card"],
+      ["MASTERCARD-ON US", "", "Bank-Issued", "", "Credit Card"],
+      ["VISA-OFF US", "", "Non-Bank", "", "Credit Card"],
+      ["MASTERCARD-OFF US", "", "Non-Bank", "", "Credit Card"],
+      ["JCB-ON US", "", "Bank-Issued", "", "Debit Card"],
+      ["UNIONPAY-OFF US", "", "Non-Bank", "", "Debit Card"]
+    ];
+    var omsRows = [
+      { "Reference Number":"REF-88001","Merchant ID":"100234","Location":"Manila","Terminal ID":"T-001","Transaction Type":"Sale","Transaction Date":"2026-09-15","Transaction Time":"09:12","Posting Date":"2026-09-16","Gross Amount":1250.00,"Commission":25.00,"Net Amount":1225.00,"Card Number":"411111******1111","Card Type (On us/Off us)":"VISA-ON US","Approved Code":"A1023","Invoice No":"INV-5001","Text Message":"Approved" },
+      { "Reference Number":"REF-88002","Merchant ID":"100567","Location":"Cebu","Terminal ID":"T-014","Transaction Type":"Sale","Transaction Date":"2026-09-15","Transaction Time":"10:47","Posting Date":"2026-09-16","Gross Amount":340.50,"Commission":6.81,"Net Amount":333.69,"Card Number":"542418******4444","Card Type (On us/Off us)":"MASTERCARD-ON US","Approved Code":"B7742","Invoice No":"INV-5002","Text Message":"Approved" },
+      { "Reference Number":"REF-88003","Merchant ID":"100891","Location":"Davao","Terminal ID":"T-027","Transaction Type":"Sale","Transaction Date":"2026-09-15","Transaction Time":"14:03","Posting Date":"2026-09-16","Gross Amount":89.00,"Commission":1.78,"Net Amount":87.22,"Card Number":"400115******0021","Card Type (On us/Off us)":"VISA-OFF US","Approved Code":"C3391","Invoice No":"INV-5003","Text Message":"Approved" },
+      { "Reference Number":"REF-88004","Merchant ID":"101045","Location":"Quezon City","Terminal ID":"T-032","Transaction Type":"Refund","Transaction Date":"2026-09-15","Transaction Time":"16:21","Posting Date":"2026-09-16","Gross Amount":-560.00,"Commission":0,"Net Amount":-560.00,"Card Number":"552211******9987","Card Type (On us/Off us)":"MASTERCARD-OFF US","Approved Code":"D5510","Invoice No":"INV-5004","Text Message":"Refund processed" },
+      { "Reference Number":"REF-88005","Merchant ID":"101322","Location":"Makati","Terminal ID":"T-009","Transaction Type":"Sale","Transaction Date":"2026-09-15","Transaction Time":"18:55","Posting Date":"2026-09-16","Gross Amount":2100.75,"Commission":42.02,"Net Amount":2058.73,"Card Number":"353011******3005","Card Type (On us/Off us)":"JCB-ON US","Approved Code":"E9012","Invoice No":"INV-5005","Text Message":"Approved" },
+      { "Reference Number":"REF-88006","Merchant ID":"101999","Location":"Taguig","Terminal ID":"T-041","Transaction Type":"Sale","Transaction Date":"2026-09-15","Transaction Time":"20:14","Posting Date":"2026-09-16","Gross Amount":475.25,"Commission":9.51,"Net Amount":465.74,"Card Number":"622126******7788","Card Type (On us/Off us)":"UNIONPAY-OFF US","Approved Code":"F2287","Invoice No":"INV-5006","Text Message":"Approved" }
+    ];
+    return { masterListRows: masterListRows, cardTypeMatrix: cardTypeMatrix, omsRows: omsRows };
+  }
+
+  /* ---------------- pipeline ---------------- */
+  function buildCardTypeMap(matrix){
+    var map = new Map();
+    for (var r = 1; r < matrix.length; r++){
+      var row = matrix[r] || [];
+      var key = norm(row[0]);
+      if (!key) continue;
+      map.set(key, { cardType: row[4] !== undefined ? row[4] : "", cardType2: row[2] !== undefined ? row[2] : "" });
+    }
+    return map;
+  }
+
+  function buildMerchantMap(masterListRows){
+    var map = new Map();
+    if (!masterListRows || !masterListRows.length) return map;
+    var headers = Object.keys(masterListRows[0]);
+    var midKey = resolveSingle(headers, MASTER_MID_CANDIDATES);
+    var nameKey = resolveSingle(headers, MASTER_NAME_CANDIDATES);
+    masterListRows.forEach(function(row){
+      var mid = midKey ? row[midKey] : null;
+      var name = nameKey ? row[nameKey] : null;
+      if (mid !== null && mid !== undefined && String(mid).trim() !== "") {
+        map.set(norm(mid), name);
+      }
+    });
+    return map;
+  }
+
+  function normalizeOmsRows(rawRows){
+    if (!rawRows.length) return [];
+    var headers = Object.keys(rawRows[0]);
+    var resolver = buildResolver(headers, FIELD_CANDIDATES);
+    return rawRows.map(function(row){
+      var out = {};
+      Object.keys(resolver).forEach(function(field){
+        var h = resolver[field];
+        out[field] = h ? row[h] : "";
+      });
+      return out;
+    });
+  }
+
+  function runPipeline(masterListRows, cardTypeMatrix, omsRowsRaw){
+    var merchantMap = buildMerchantMap(masterListRows);
+    var cardTypeMap = buildCardTypeMap(cardTypeMatrix);
+    var omsRows = normalizeOmsRows(omsRowsRaw);
+
+    var unmatchedMerchants = [];
+    var unmatchedCardTypeCount = 0;
+
+    var processed = omsRows.map(function(row){
+      var midKey = norm(row.merchantId);
+      var merchantMatched = merchantMap.has(midKey) && String(row.merchantId || "").trim() !== "";
+      var merchant = merchantMatched ? merchantMap.get(midKey) : "";
+      if (!merchantMatched) unmatchedMerchants.push(row);
+
+      var cardKey = norm(row.cardTypeOnOff);
+      var cardHit = cardTypeMap.get(cardKey);
+      if (!cardHit) unmatchedCardTypeCount++;
+
+      return {
+        referenceNumber: row.referenceNumber,
+        merchantId: row.merchantId,
+        location: row.location,
+        terminalId: row.terminalId,
+        merchant: merchant,
+        transactionType: row.transactionType,
+        transactionDate: row.transactionDate,
+        transactionTime: row.transactionTime,
+        postingDate: row.postingDate,
+        grossAmount: row.grossAmount,
+        commission: row.commission,
+        netAmount: row.netAmount,
+        cardNumber: row.cardNumber,
+        cardTypeOnOff: row.cardTypeOnOff,
+        cardType: cardHit ? cardHit.cardType : "",
+        cardType2: cardHit ? cardHit.cardType2 : "",
+        walletClassification: "",
+        classification: "",
+        approvedCode: row.approvedCode,
+        invoiceNo: row.invoiceNo,
+        textMessage: row.textMessage,
+        merchantMatched: merchantMatched
+      };
+    });
+
+    return { processed: processed, unmatchedMerchants: unmatchedMerchants, unmatchedCardTypeCount: unmatchedCardTypeCount };
+  }
+
+  /* ---------------- DOM wiring ---------------- */
+  var els = {
+    masterFiles: document.getElementById("masterFiles"),
+    masterFileList: document.getElementById("masterFileList"),
+    sheetChecks: document.getElementById("sheetChecks"),
+    freqDaily: document.getElementById("freqDaily"),
+    freqWeekly: document.getElementById("freqWeekly"),
+    omsFile: document.getElementById("omsFile"),
+    omsFileList: document.getElementById("omsFileList"),
+    processBtn: document.getElementById("processBtn"),
+    sampleBtn: document.getElementById("sampleBtn"),
+    step1: document.getElementById("step1"),
+    step2: document.getElementById("step2"),
+    step3: document.getElementById("step3"),
+    pipelineList: document.getElementById("pipelineList"),
+    resultsPanel: document.getElementById("resultsPanel"),
+    emptyState: document.getElementById("emptyState")
+  };
+
+  function renderMasterFileList(){
+    els.masterFileList.innerHTML = state.masterFiles.map(function(f, i){
+      return '<div class="file-chip"><span>' + escapeHtml(f.name) + '</span><button type="button" data-i="' + i + '" aria-label="Remove file">×</button></div>';
+    }).join("");
+    Array.prototype.forEach.call(els.masterFileList.querySelectorAll("button"), function(btn){
+      btn.addEventListener("click", function(){
+        state.masterFiles.splice(Number(btn.dataset.i), 1);
+        state.isSample = false;
+        recomputeMasterSheets();
+      });
+    });
+  }
+
+  function recomputeMasterSheets(){
+    renderMasterFileList();
+    var masterSheet = null, cardSheet = null;
+    for (var i = 0; i < state.masterFiles.length; i++){
+      var wb = state.masterFiles[i].workbook;
+      if (!wb) continue;
+      if (!masterSheet) masterSheet = findSheet(wb, ["masterlist"]);
+      if (!cardSheet) cardSheet = findSheet(wb, ["cardtypeclassification"]);
+    }
+    state.masterListRows = masterSheet ? XLSX.utils.sheet_to_json(masterSheet, { defval: "" }) : null;
+    state.cardTypeMatrix = cardSheet ? XLSX.utils.sheet_to_json(cardSheet, { header: 1, defval: "" }) : null;
+
+    var checks = "";
+    if (state.masterFiles.length){
+      checks += '<div class="sheet-check ' + (state.masterListRows ? "ok" : "bad") + '">' + (state.masterListRows ? "✓ Master_List found (" + state.masterListRows.length + " rows)" : "✗ Master_List sheet not found") + '</div>';
+      checks += '<div class="sheet-check ' + (state.cardTypeMatrix ? "ok" : "bad") + '">' + (state.cardTypeMatrix ? "✓ Card Type Classification found (" + (state.cardTypeMatrix.length - 1) + " rows)" : "✗ Card Type Classification sheet not found") + '</div>';
+    }
+    els.sheetChecks.innerHTML = checks;
+    updateStepStates();
+  }
+
+  els.masterFiles.addEventListener("change", function(e){
+    var files = Array.prototype.slice.call(e.target.files);
+    if (!files.length) return;
+    state.isSample = false;
+    Promise.all(files.map(function(file){
+      return readWorkbook(file).then(function(wb){ return { name: file.name, workbook: wb }; });
+    })).then(function(parsed){
+      state.masterFiles = state.masterFiles.concat(parsed);
+      recomputeMasterSheets();
+    }).catch(function(err){
+      alert("Could not read one of the uploaded workbooks: " + err.message);
+    });
+    e.target.value = "";
+  });
+
+  function setFrequency(freq){
+    state.frequency = freq;
+    els.freqDaily.setAttribute("aria-pressed", String(freq === "Daily"));
+    els.freqWeekly.setAttribute("aria-pressed", String(freq === "Weekly"));
+    updateStepStates();
+  }
+  els.freqDaily.addEventListener("click", function(){ setFrequency("Daily"); });
+  els.freqWeekly.addEventListener("click", function(){ setFrequency("Weekly"); });
+
+  function renderOmsFileList(){
+    els.omsFileList.innerHTML = state.omsFile ?
+      '<div class="file-chip"><span>' + escapeHtml(state.omsFile.name) + ' (' + state.omsFile.rows.length + ' rows)</span><button type="button" id="removeOms" aria-label="Remove file">×</button></div>' : "";
+    var rm = document.getElementById("removeOms");
+    if (rm) rm.addEventListener("click", function(){ state.omsFile = null; state.isSample = false; renderOmsFileList(); updateStepStates(); });
+  }
+
+  els.omsFile.addEventListener("change", function(e){
+    var file = e.target.files[0];
+    if (!file) return;
+    state.isSample = false;
+    readWorkbook(file).then(function(wb){
+      var sheet = wb.Sheets[wb.SheetNames[0]];
+      var rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      state.omsFile = { name: file.name, rows: rows };
+      renderOmsFileList();
+      updateStepStates();
+    }).catch(function(err){
+      alert("Could not read the OMS file: " + err.message);
+    });
+    e.target.value = "";
+  });
+
+  els.sampleBtn.addEventListener("click", function(){
+    var sample = sampleWorkbookData();
+    state.masterFiles = [{ name: "Master_List_sample.xlsx (example)", workbook: null }];
+    state.masterListRows = sample.masterListRows;
+    state.cardTypeMatrix = sample.cardTypeMatrix;
+    state.omsFile = { name: "OMS_Raw_Transactions_sample.xlsx (example)", rows: sample.omsRows };
+    state.isSample = true;
+    if (!state.frequency) setFrequency("Daily");
+    renderMasterFileList();
+    els.sheetChecks.innerHTML =
+      '<div class="sheet-check ok">✓ Master_List found (' + sample.masterListRows.length + ' rows)</div>' +
+      '<div class="sheet-check ok">✓ Card Type Classification found (' + (sample.cardTypeMatrix.length - 1) + ' rows)</div>';
+    renderOmsFileList();
+    updateStepStates();
+  });
+
+  function updateStepStates(){
+    var step1Done = !!(state.masterListRows && state.cardTypeMatrix);
+    var step2Done = !!state.frequency;
+    var step3Done = !!(state.omsFile && state.omsFile.rows.length);
+    els.step1.classList.toggle("done", step1Done);
+    els.step2.classList.toggle("done", step2Done);
+    els.step3.classList.toggle("done", step3Done);
+    updateProcessAvailability();
+  }
+
+  function updateProcessAvailability(){
+    var step1Done = !!(state.masterListRows && state.cardTypeMatrix);
+    var ready = step1Done && !!state.frequency && !!(state.omsFile && state.omsFile.rows.length);
+    els.processBtn.disabled = !ready;
+  }
+
+  /* ---------------- pipeline animation + processing ---------------- */
+  function sleep(ms){ return new Promise(function(res){ setTimeout(res, ms); }); }
+
+  function resetPipelineUI(){
+    Array.prototype.forEach.call(els.pipelineList.querySelectorAll("li"), function(li){
+      li.classList.remove("active", "done");
+    });
+  }
+
+  els.processBtn.addEventListener("click", function(){
+    els.processBtn.disabled = true;
+    els.processBtn.textContent = "Processing…";
+    resetPipelineUI();
+    els.emptyState.hidden = true;
+    els.resultsPanel.querySelectorAll(".dynamic").forEach(function(n){ n.remove(); });
+
+    var order = ["cardtype", "cardtype2", "merchant", "wallet", "classification", "build"];
+    var i = 0;
+    function step(){
+      if (i > 0) {
+        var prev = els.pipelineList.querySelector('[data-step="' + order[i-1] + '"]');
+        prev.classList.remove("active"); prev.classList.add("done");
+      }
+      if (i >= order.length){
+        var result = runPipeline(state.masterListRows, state.cardTypeMatrix, state.omsFile.rows);
+        state.result = result;
+        renderResults(result);
+        els.processBtn.disabled = false;
+        els.processBtn.textContent = "Process Payout";
+        updateProcessAvailability();
+        return;
+      }
+      var li = els.pipelineList.querySelector('[data-step="' + order[i] + '"]');
+      li.classList.add("active");
+      i++;
+      setTimeout(step, 220);
+    }
+    step();
+  });
+
+  var COLUMNS = [
+    { key: "referenceNumber", label: "Reference Number" },
+    { key: "merchantId", label: "Merchant ID" },
+    { key: "location", label: "Location" },
+    { key: "terminalId", label: "Terminal ID" },
+    { key: "merchant", label: "Merchant" },
+    { key: "transactionType", label: "Transaction Type" },
+    { key: "transactionDate", label: "Transaction Date", date: true },
+    { key: "transactionTime", label: "Transaction Time" },
+    { key: "postingDate", label: "Posting Date", date: true },
+    { key: "grossAmount", label: "Gross Amount", num: true },
+    { key: "commission", label: "Commission", num: true },
+    { key: "netAmount", label: "Net Amount", num: true },
+    { key: "cardNumber", label: "Card Number" },
+    { key: "cardTypeOnOff", label: "Card Type (On us/Off us)" },
+    { key: "cardType", label: "Card Type" },
+    { key: "cardType2", label: "Card Type 2" },
+    { key: "walletClassification", label: "Wallet Classification", pending: true },
+    { key: "classification", label: "Classification", pending: true },
+    { key: "approvedCode", label: "Approved Code" },
+    { key: "invoiceNo", label: "Invoice No" },
+    { key: "textMessage", label: "Text Message" }
+  ];
+
+  function renderResults(result){
+    var processed = result.processed;
+    var total = processed.length;
+    var unmatchedCount = result.unmatchedMerchants.length;
+    var matchedCount = total - unmatchedCount;
+    var cardMatched = total - result.unmatchedCardTypeCount;
+
+    var wrap = document.createElement("div");
+    wrap.className = "dynamic";
+    wrap.style.display = "flex";
+    wrap.style.flexDirection = "column";
+    wrap.style.gap = "18px";
+
+    var summary = document.createElement("div");
+    summary.className = "summary-grid";
+    summary.innerHTML =
+      statTile(total, "Transactions Processed", "") +
+      statTile(matchedCount, "Merchant Matched (MID)", "ok") +
+      statTile(unmatchedCount, "Unmatched MID", unmatchedCount ? "warn" : "ok") +
+      statTile(cardMatched + " / " + total, "Card Type Matched", "");
+    wrap.appendChild(summary);
+
+    var resultsCard = document.createElement("div");
+    resultsCard.className = "panel";
+
+    var head = document.createElement("div");
+    head.className = "results-head";
+    head.innerHTML =
+      '<div class="results-title">Process Raw Details <span class="count">' + total + ' rows</span></div>' +
+      '<div class="head-actions">' +
+        '<button class="btn btn-secondary" id="downloadBtn" type="button">Download Process Raw Details</button>' +
+      '</div>';
+    resultsCard.appendChild(head);
+
+    if (unmatchedCount > 0){
+      var banner = document.createElement("div");
+      banner.className = "banner warn";
+      banner.innerHTML = "⚠ " + unmatchedCount + " transaction" + (unmatchedCount === 1 ? "" : "s") + " reference a Merchant ID not found in the Master_List and are flagged below for review.";
+      resultsCard.appendChild(banner);
+    }
+    if (state.isSample){
+      var sBanner = document.createElement("div");
+      sBanner.className = "banner sample";
+      sBanner.innerHTML = "This is example data for demonstration — upload your own Master List and OMS file to process real transactions.";
+      resultsCard.appendChild(sBanner);
+    }
+
+    var scroll = document.createElement("div");
+    scroll.className = "table-scroll";
+    var table = document.createElement("table");
+    var thead = document.createElement("thead");
+    var htr = document.createElement("tr");
+    COLUMNS.forEach(function(col){
+      var th = document.createElement("th");
+      th.textContent = col.label;
+      if (col.pending){
+        var mark = document.createElement("span");
+        mark.className = "pending-mark";
+        mark.textContent = "rule pending";
+        th.appendChild(mark);
+      }
+      htr.appendChild(th);
+    });
+    var statusTh = document.createElement("th");
+    statusTh.textContent = "Match Status";
+    htr.appendChild(statusTh);
+    thead.appendChild(htr);
+    table.appendChild(thead);
+
+    var tbody = document.createElement("tbody");
+    processed.forEach(function(row){
+      var tr = document.createElement("tr");
+      if (!row.merchantMatched) tr.className = "unmatched";
+      COLUMNS.forEach(function(col){
+        var td = document.createElement("td");
+        var v = row[col.key];
+        if (col.pending){
+          td.innerHTML = (v === "" || v === undefined) ? '<span class="chip pending">pending</span>' : escapeHtml(v);
+        } else if (col.num) {
+          td.className = "num";
+          td.textContent = fmtAmount(v);
+        } else if (col.date) {
+          td.textContent = displayDate(v);
+        } else {
+          td.textContent = (v === undefined || v === null) ? "" : v;
+        }
+        tr.appendChild(td);
+      });
+      var statusTd = document.createElement("td");
+      statusTd.innerHTML = row.merchantMatched ? '<span class="chip ok">Matched</span>' : '<span class="chip bad">Unmatched MID</span>';
+      tr.appendChild(statusTd);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    resultsCard.appendChild(scroll);
+    wrap.appendChild(resultsCard);
+
+    els.resultsPanel.appendChild(wrap);
+
+    document.getElementById("downloadBtn").addEventListener("click", function(){
+      downloadProcessRawDetails(processed);
+    });
+  }
+
+  function statTile(value, label, tone){
+    return '<div class="stat-tile' + (tone ? " " + tone : "") + '"><div class="stat-value">' + escapeHtml(value) + '</div><div class="stat-label">' + escapeHtml(label) + '</div></div>';
+  }
+
+  /* ---------------- download ---------------- */
+  function modePostingDate(processed){
+    var counts = {};
+    var best = null, bestCount = 0;
+    processed.forEach(function(row){
+      var iso = toISODate(row.postingDate);
+      if (!iso) return;
+      counts[iso] = (counts[iso] || 0) + 1;
+      if (counts[iso] > bestCount){ best = iso; bestCount = counts[iso]; }
+    });
+    return best || new Date().toISOString().slice(0, 10);
+  }
+
+  function downloadProcessRawDetails(processed){
+    var exportRows = processed.map(function(row){
+      var out = {};
+      COLUMNS.forEach(function(col){ out[col.label] = row[col.key]; });
+      out["Match Status"] = row.merchantMatched ? "Matched" : "Unmatched MID";
+      return out;
+    });
+    var ws = XLSX.utils.json_to_sheet(exportRows, { header: COLUMNS.map(function(c){ return c.label; }).concat(["Match Status"]) });
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Process Raw Details");
+    var arrayBuf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+    var blob = new Blob([arrayBuf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+
+    var freq = state.frequency || "Daily";
+    var dateStr = modePostingDate(processed);
+    var filename = "Process_Raw_Details_" + freq + "_" + dateStr + ".xlsx";
+
+    var btn = document.getElementById("downloadBtn");
+
+    if (!downloadsApi) {
+      alert("Downloads aren't available in this preview. Filename would be: " + filename);
+      return;
+    }
+    btn.disabled = true;
+    var original = btn.textContent;
+    btn.textContent = "Saving…";
+    downloadsApi.save({ filename: filename, data: blob }).then(function(){
+      btn.textContent = "Saved ✓";
+      setTimeout(function(){ btn.textContent = original; btn.disabled = false; }, 1600);
+    }).catch(function(err){
+      btn.disabled = false;
+      btn.textContent = original;
+      if (err && err.code === "declined") return;
+      alert("Could not save the file: " + (err && err.message ? err.message : "unknown error"));
+    });
+  }
+
+  updateStepStates();
+})();
+</script>
