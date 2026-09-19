@@ -897,7 +897,9 @@
       var key = norm(row.merchantId) + "|" + norm(row._merchantKey);
       if (!merchantGroups.has(key)){
         merchantGroups.set(key, {
-          mid: row.merchantId,
+          // Force to string: a numeric-typed Merchant ID (common in real OMS exports) would otherwise
+          // reach Excel as a bare number and render a large MID in scientific notation.
+          mid: row.merchantId === undefined || row.merchantId === null ? "" : String(row.merchantId),
           merchantKey: row._merchantKey,
           merchantName: row.merchant,
           accountCode: row._accountCode && String(row._accountCode).trim() !== "" ? row._accountCode : "(unassigned)",
@@ -1365,13 +1367,22 @@
     return best || new Date().toISOString().slice(0, 10);
   }
 
-  function downloadProcessRawDetails(processed){
-    var exportRows = processed.map(function(row){
+  // Merchant ID must stay text on export: a numeric-typed value (common in real OMS exports) would
+  // otherwise reach Excel as a bare number and a large MID would render in scientific notation.
+  function buildProcessRawDetailsExportRows(processed){
+    return processed.map(function(row){
       var out = {};
-      COLUMNS.forEach(function(col){ out[col.label] = row[col.key]; });
+      COLUMNS.forEach(function(col){
+        var v = row[col.key];
+        out[col.label] = (col.key === "merchantId" && v !== undefined && v !== null) ? String(v) : v;
+      });
       out["Match Status"] = row.merchantMatched ? "Matched" : "Unmatched MID";
       return out;
     });
+  }
+
+  function downloadProcessRawDetails(processed){
+    var exportRows = buildProcessRawDetailsExportRows(processed);
     var ws = XLSX.utils.json_to_sheet(exportRows, { header: COLUMNS.map(function(c){ return c.label; }).concat(["Match Status"]) });
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Process Raw Details");
@@ -1742,12 +1753,7 @@
       });
     });
 
-    var prdExportRows = state.result.processed.map(function(row){
-      var out = {};
-      COLUMNS.forEach(function(col){ out[col.label] = row[col.key]; });
-      out["Match Status"] = row.merchantMatched ? "Matched" : "Unmatched MID";
-      return out;
-    });
+    var prdExportRows = buildProcessRawDetailsExportRows(state.result.processed);
     var prdSheet = XLSX.utils.json_to_sheet(prdExportRows, { header: COLUMNS.map(function(c){ return c.label; }).concat(["Match Status"]) });
 
     var wb = XLSX.utils.book_new();
