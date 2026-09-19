@@ -84,6 +84,32 @@ Decimal precision was taken from the reference export's own number formats rathe
 
 In the Excel export these are applied as **cell number formats**, so values stay numeric (`t="n"`) and keep calculating — nothing is converted to text. The on-screen Grid View already had comma-separated amounts; three inconsistencies were corrected to match the same rules: rates now always show two decimals (`2.50%`, previously `2.5%`), Cleared Txn now renders as an integer count (`21`, previously `21.00`), and zero values now show as `0.00` rather than a bare `0`.
 
+### Live Excel formulas in the export
+
+The exported workbook carries **live formulas**, not just computed values — matching the reference export, which has 181 of them. Editing an input cell in Excel (Rent, Portal Amount, a rate, a Gross Collection) recalculates everything downstream.
+
+Inputs stay plain values; derived cells carry a formula plus the already-computed value as a cached result, so figures read correctly before Excel recalculates. `<calcPr fullCalcOnLoad="1"/>` is patched into the workbook so Excel recalculates on open regardless.
+
+| Cell | Formula |
+|---|---|
+| Bank Fee | `ROUND(Gross*BankRate,2)` |
+| Noqoody Charge | `ROUND(Gross*MerchantRate,2)` |
+| Noqoody Charge/Txn | `ROUND(ClearedTxn*RatePerTxn,2)` |
+| Noqoody Profit | `ROUND(Charge+ChargePerTxn-BankFee-Refund,2)` |
+| Internal Transfer | `ROUND(Gross-Charge-ChargePerTxn-Refund,2)` |
+| Total Noqoody Profit / Bank Charges / Total Internal Transfer | `ROUND(<group1>+<group2>+…,2)` across every Card Type section |
+| Bank Difference | `ROUND(BankCharges-ActualBankCharges,2)` |
+| Transfer Deducted (Rent, Others) / (Rent) | `ROUND(TotalInternalTransfer-Rent[-Gain],2)` |
+| Merchant Payout | `ROUND(TransferDeducted-PayoutProcessingFee,2)` |
+| Total Transfer | `ROUND(SUM(MerchantPayout over the merchant's main + below rows),2)` — main row only |
+| Difference | `ROUND(TotalTransfer-PortalAmount,2)` — main row only |
+| Subtotal row | `SUM(<col><firstDataRow>:<col><lastDataRow>)` per Account Code, every numeric column except the two rate columns |
+| Grand total row | `<subtotal1>+<subtotal2>+…` |
+
+Cell references are generated from the report's own column layout rather than copied from the reference, since the number of Card Type sections is driven by the `Card_Types` sheet.
+
+Verified by independently evaluating every formula in the exported file against its cached value: **1,726 of 1,726 match**, zero mismatches.
+
 ## Workflow (Phase 1 scope)
 
 1. Upload the Master List / Configuration workbook(s) (see above).

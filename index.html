@@ -960,6 +960,9 @@
           bankFee: sumLines(lines, function(l){ return l.groups[i].bankFee; }),
           noqoodyCharge: sumLines(lines, function(l){ return l.groups[i].noqoodyCharge; }),
           clearedTxn: sumBy(lines, function(l){ return l.groups[i].clearedTxn; }),
+          // Summed because the reference export subtotals this column too, and the exported SUM
+          // formula covers it — leaving it out made the cached value disagree with the formula.
+          ratePerTxn: sumLines(lines, function(l){ return l.groups[i].ratePerTxn; }),
           noqoodyChargePerTxn: sumLines(lines, function(l){ return l.groups[i].noqoodyChargePerTxn; }),
           refund: sumLines(lines, function(l){ return l.groups[i].refund; }),
           profit: sumLines(lines, function(l){ return l.groups[i].profit; }),
@@ -1700,7 +1703,15 @@
           .replace(/\slevel="\d+"/g, "")
           .replace(/hidden="true"/g, 'hidden="1"');
         zip.file(sheetXmlPath, patched);
-        return zip.generateAsync({ type: "blob", mimeType: XLSX_MIME });
+        // The report's cells carry live formulas with cached results; fullCalcOnLoad makes Excel
+        // recalculate them on open so nothing can display a stale cached value.
+        return zip.file("xl/workbook.xml").async("string").then(function(wbXml){
+          var calc = '<calcPr calcId="191029" fullCalcOnLoad="1"/>';
+          zip.file("xl/workbook.xml", /<calcPr[^>]*\/>/.test(wbXml)
+            ? wbXml.replace(/<calcPr[^>]*\/>/, calc)
+            : wbXml.replace("</workbook>", calc + "</workbook>"));
+          return zip.generateAsync({ type: "blob", mimeType: XLSX_MIME });
+        });
       });
     }).catch(function(){
       return new Blob([arrayBuf], { type: XLSX_MIME });
@@ -1761,6 +1772,7 @@
     var colHeaderRowIdxs = []; // 0-based row indices that are column-header rows (for coloring)
     var merges = [];
 
+    var sections = []; // per Account Code: data row indices, merchant main/below spans, subtotal row
     function pushRow(arr, level){ rows.push(arr); rowLevels.push(level || 0); return rows.length - 1; }
     function addMerge(r, c1, c2){ if (c2 > c1) merges.push({ s: { r: r, c: c1 }, e: { r: r, c: c2 } }); }
 
@@ -1781,12 +1793,18 @@
       colHeaderRowIdxs.push(colHeaderRowIdx);
 
       var lineNo = 0;
+      var sectionDataRows = [];
+      var mainRowSpans = []; // {mainRowIdx, lastRowIdx} — a merchant's main row plus its below-threshold row
       group.lines.forEach(function(line){
         lineNo++;
-        pushRow(lineToRow([lineNo, line.mid, line.label], line.groups, line), 1);
+        var idx = pushRow(lineToRow([lineNo, line.mid, line.label], line.groups, line), 1);
+        sectionDataRows.push(idx);
+        if (line.isBelow && mainRowSpans.length) mainRowSpans[mainRowSpans.length - 1].lastRowIdx = idx;
+        else mainRowSpans.push({ mainRowIdx: idx, lastRowIdx: idx });
       });
       var subRowIdx = pushRow(lineToRow(["SUBTOTAL — Account Code " + group.accountCode, "", ""], group.subtotal.groups, group.subtotal), 0);
       addMerge(subRowIdx, 0, 2);
+      sections.push({ dataRows: sectionDataRows, mainRowSpans: mainRowSpans, subtotalRowIdx: subRowIdx });
     });
 
     var grandRowIdx = pushRow(lineToRow(["GRAND TOTAL — ALL ACCOUNT CODES", "", ""], report.grandTotal.groups, report.grandTotal), 0);
@@ -1825,6 +1843,91 @@
       if (hiddenCols[i]) col.hidden = true;
       return col;
     });
+
+    // Live Excel formulas — the exported workbook carries the same formulas the reference export uses,
+    // so it recalculates inside Excel when an input cell is edited (Rent, Portal Amount, a rate, a
+    // Gross Collection). Inputs stay plain values; every derived cell gets a formula plus the
+    // already-computed value as its cached result, so the numbers read correctly before recalculation.
+    var GI = { gross: 0, bankRate: 1, bankFee: 2, merchantRate: 3, noqoodyCharge: 4, clearedTxn: 5, ratePerTxn: 6, chargePerTxn: 7, refund: 8, profit: 9, internalTransfer: 10 };
+    var RI = { totalProfit: 0, totalBankFee: 1, actualBankCharges: 2, bankDifference: 3, totalInternalTransfer: 4, rent: 5, gain: 6, deductedRentOthers: 7, deductedRent: 8, payoutFee: 9, merchantPayout: 10 };
+    var FI = { totalTransfer: 0, portalAmount: 1, difference: 2 };
+    function groupCol(gi, key){ return leadCols + gi * colsPerGroup + GI[key]; }
+    function reconCol(key){ return reconStartCol + RI[key]; }
+    function finalCol(key){ return finalStartCol + FI[key]; }
+    function ref(colIdx, rowIdx){ return XLSX.utils.encode_cell({ r: rowIdx, c: colIdx }); }
+    function setFormula(rowIdx, colIdx, formula){
+      var addr = ref(colIdx, rowIdx);
+      var cell = reportSheet[addr] || (reportSheet[addr] = { t: "n", v: 0 });
+      cell.f = formula;
+    }
+    function sumRange(colIdx, fromRow, toRow){
+      return "SUM(" + ref(colIdx, fromRow) + ":" + ref(colIdx, toRow) + ")";
+    }
+
+    sections.forEach(function(section){
+      if (!section.dataRows.length) return;
+
+      section.dataRows.forEach(function(r){
+        var profitRefs = [], bankFeeRefs = [], transferRefs = [];
+        report.paymentGroups.forEach(function(pg, gi){
+          var gross = ref(groupCol(gi, "gross"), r);
+          var refund = ref(groupCol(gi, "refund"), r);
+          var bankFee = ref(groupCol(gi, "bankFee"), r);
+          var charge = ref(groupCol(gi, "noqoodyCharge"), r);
+          var perTxn = ref(groupCol(gi, "chargePerTxn"), r);
+          setFormula(r, groupCol(gi, "bankFee"), "ROUND(" + gross + "*" + ref(groupCol(gi, "bankRate"), r) + ",2)");
+          setFormula(r, groupCol(gi, "noqoodyCharge"), "ROUND(" + gross + "*" + ref(groupCol(gi, "merchantRate"), r) + ",2)");
+          setFormula(r, groupCol(gi, "chargePerTxn"), "ROUND(" + ref(groupCol(gi, "clearedTxn"), r) + "*" + ref(groupCol(gi, "ratePerTxn"), r) + ",2)");
+          setFormula(r, groupCol(gi, "profit"), "ROUND(" + charge + "+" + perTxn + "-" + bankFee + "-" + refund + ",2)");
+          setFormula(r, groupCol(gi, "internalTransfer"), "ROUND(" + gross + "-" + charge + "-" + perTxn + "-" + refund + ",2)");
+          profitRefs.push(ref(groupCol(gi, "profit"), r));
+          bankFeeRefs.push(bankFee);
+          transferRefs.push(ref(groupCol(gi, "internalTransfer"), r));
+        });
+
+        var totalTransferRef = ref(reconCol("totalInternalTransfer"), r);
+        setFormula(r, reconCol("totalProfit"), "ROUND(" + profitRefs.join("+") + ",2)");
+        setFormula(r, reconCol("totalBankFee"), "ROUND(" + bankFeeRefs.join("+") + ",2)");
+        setFormula(r, reconCol("bankDifference"), "ROUND(" + ref(reconCol("totalBankFee"), r) + "-" + ref(reconCol("actualBankCharges"), r) + ",2)");
+        setFormula(r, reconCol("totalInternalTransfer"), "ROUND(" + transferRefs.join("+") + ",2)");
+        setFormula(r, reconCol("deductedRentOthers"), "ROUND(" + totalTransferRef + "-" + ref(reconCol("rent"), r) + "-" + ref(reconCol("gain"), r) + ",2)");
+        setFormula(r, reconCol("deductedRent"), "ROUND(" + totalTransferRef + "-" + ref(reconCol("rent"), r) + ",2)");
+        setFormula(r, reconCol("merchantPayout"), "ROUND(" + ref(reconCol("deductedRentOthers"), r) + "-" + ref(reconCol("payoutFee"), r) + ",2)");
+      });
+
+      // Total Transfer sums the merchant's own main + below-threshold rows, on the main row only.
+      section.mainRowSpans.forEach(function(span){
+        setFormula(span.mainRowIdx, finalCol("totalTransfer"),
+          "ROUND(" + sumRange(reconCol("merchantPayout"), span.mainRowIdx, span.lastRowIdx) + ",2)");
+        setFormula(span.mainRowIdx, finalCol("difference"),
+          "ROUND(" + ref(finalCol("totalTransfer"), span.mainRowIdx) + "-" + ref(finalCol("portalAmount"), span.mainRowIdx) + ",2)");
+      });
+
+      // Subtotals sum this Account Code's data rows — every numeric column except the two rate columns.
+      var first = section.dataRows[0], last = section.dataRows[section.dataRows.length - 1];
+      subtotalledCols().forEach(function(c){
+        setFormula(section.subtotalRowIdx, c, sumRange(c, first, last));
+      });
+    });
+
+    // Grand total adds the Account Code subtotal cells together.
+    if (sections.length){
+      subtotalledCols().forEach(function(c){
+        setFormula(grandRowIdx, c, sections.map(function(s){ return ref(c, s.subtotalRowIdx); }).join("+"));
+      });
+    }
+
+    function subtotalledCols(){
+      var list = [];
+      report.paymentGroups.forEach(function(pg, gi){
+        GROUP_SUBCOLS.forEach(function(col, i){
+          if (!col.pct) list.push(leadCols + gi * colsPerGroup + i);
+        });
+      });
+      RECON_COLS.forEach(function(col, i){ list.push(reconStartCol + i); });
+      FINAL_COLS.forEach(function(col, i){ list.push(finalStartCol + i); });
+      return list;
+    }
 
     // Number formats — the same set the reference export uses: amounts #,##0.00, rates 0.00%,
     // transaction counts #,##0. Applied as cell number formats, so the values stay numeric and keep
