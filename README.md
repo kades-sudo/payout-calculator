@@ -258,6 +258,66 @@ renders the banner.
 - A missing `<meta charset="utf-8">` was found and added — without it the em dashes in the app's
   notices render as mojibake depending on how the page is served.
 
+## Transaction Type handling and the all-types transaction count
+
+**Audit status: PENDING VERIFICATION.**
+
+### Rules as implemented
+
+| Transaction Type | Gross Collection | Cleared Txn | Refund column | Gain For Bank Charges |
+|---|---|---|---|---|
+| Sale | adds | counts | – | – |
+| Refund | – | – | `ABS(Gross Amount)` | flat **+5** per transaction |
+| Dispute | – | – | `ABS(Gross Amount)` | flat **+5** per transaction |
+| Reversal | – | – | `ABS(Gross Amount)` **only if its own Gross Amount is negative** | never |
+| anything else | – | – | `ABS(Gross Amount)` (original behaviour) | never — and reported in the UI |
+
+The flat charge is `GAIN_PER_REFUND_DISPUTE = 5`, a business rule supplied directly and not derived
+from any uploaded sheet. It is **added to** the Master_List `NOQOODY GAIN FOR BANK CHARGE`, not a
+replacement for it.
+
+**The flat charge is counted per merchant, over the merchant's entire transaction set, and applied on
+the main (>= threshold) line.** This matters: every Refund and Dispute in the real data has a
+*negative* Gross Amount, and the Below Amount split is `gross < threshold`, so all of them land on the
+*below* line — where Gain For Bank Charges is always zero. Counting per line would silently drop the
+charge for every merchant that has a Below Amount Rule.
+
+A transaction type outside these four has no defined rule, so it keeps the original behaviour
+(absolute amount into Refund) and is surfaced in a banner rather than being assumed to follow one of
+the rules above. No rule was invented for it.
+
+### Transaction count: two different figures, deliberately
+
+- **Dashboard "Total Transactions"** counts **every** transaction type — Sale, Refund, Dispute,
+  Reversal and any unrecognised type. Each category card shows this count, with the Sale subset as
+  supporting text.
+- **The report's `Cleared Txn` column stays Sale-only**, because it is the base for the
+  per-transaction charge (`Cleared Txn x Rate Per Trnx`). Changing it would silently change payout
+  money. The spec line "Sale -> adds to Gross Collection and transaction count" is read as defining
+  this column; the "count all transactions" instruction is read as applying to the dashboard metric.
+
+Both figures are reconciled separately: `Total Transaction Count` against all reported transactions,
+and `Cleared (Sale) transactions` against the Sale subset and against the Account Code subtotals.
+
+### Verification
+
+A controlled fixture (`OMS_TxnTypes.xlsx`) was built because the real dataset contains **no Reversal
+rows at all** (3,684 Sale, 1 Refund, 22 Dispute — every Refund and Dispute with negative gross).
+
+*AL MARFAT TAILORING* (no Below rule, base gain 4) — 2 Sale, 1 Refund, 2 Dispute, 1 negative Reversal,
+1 positive Reversal, 1 unknown type. Expected and produced: Gross `1,500.00`; Cleared `2`;
+transactions `8`; Refund `385.00` (the positive-gross Reversal of 300 correctly contributes nothing);
+Gain `19.00` = 4 + 5x3.
+
+*MADHURA RESTAURANT* (Below rule 25, base gain 6) — main row Gain `16.00` = 6 + 5x2, proving the flat
+charge survives even though both refunds sit on the below row; below row Refund `55.00`, Gain `0.00`.
+
+On the real dataset: 1,565 transactions of which 1,563 Sale (the 2 non-Sale both Debit Card, which is
+why that category reads 889 all-types vs 887 cleared); Gain total `126.00` = base `116.00` + 5x2, with
+`AL SULTAN MEDICAL CENTER` moving 0 -> 5 and `NEW BALANCE DOHA` 4 -> 9. All five dashboard
+reconciliation checks pass. Export re-verified: 1,726 / 1,726 formulas evaluate to their cached
+values, 114 columns all with widths, 80 hidden and outlined, freeze pane and `sheetFormatPr` intact.
+
 ### Still open after this update
 
 - `Classification` and `Wallet Classification` lookup rules — still undefined, so still not invented.

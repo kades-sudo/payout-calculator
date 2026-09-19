@@ -878,14 +878,46 @@
   //  - Internal Transfer = ROUND(Gross Collection - Noqoody Charge - Noqoody Charge Per Txn - Refund, 2).
   // Actual Bank Charges, Rent and Portal Amount are external reconciliation figures (bank statement /
   // payout portal) that don't exist in any uploaded sheet — they're manual inputs, defaulting to 0.
+  // Transaction Type handling:
+  //   Sale              -> Gross Collection and Cleared Txn (the per-transaction charge base).
+  //   Refund / Dispute  -> ABS(Gross Amount) into Refund, and a flat GAIN_PER_REFUND_DISPUTE added
+  //                        to that merchant's Gain For Bank Charges (applied per merchant, in
+  //                        buildMerchantLine, not per payment group).
+  //   Reversal          -> never carries the flat gain, and only reaches the Refund column when its
+  //                        own Gross Amount is negative; a positive-gross Reversal contributes
+  //                        nothing at all.
+  //   anything else     -> keeps the original behaviour (ABS into Refund) so no transaction is
+  //                        silently dropped, and is surfaced in the UI as an unrecognised type
+  //                        rather than being assumed to follow one of the rules above.
+  function txnClass(transactionType){
+    var k = norm(transactionType);
+    if (k === "sale") return "sale";
+    if (k === "refund" || k === "dispute") return "refunddispute";
+    if (k === "reversal") return "reversal";
+    return "unknown";
+  }
+  // Flat amount charged back to the merchant for each Refund/Dispute transaction. A business rule
+  // supplied directly, not derived from any uploaded sheet.
+  var GAIN_PER_REFUND_DISPUTE = 5;
+
+  function countRefundDispute(rows){
+    return rows.reduce(function(n, r){ return n + (txnClass(r.transactionType) === "refunddispute" ? 1 : 0); }, 0);
+  }
+
   function computePaymentGroupCell(rows, masterEntry, pg, isBelow, bankCostIndex){
     var groupRows = rows.filter(function(r){ return norm(r.cardType2) === norm(pg.name); });
-    var saleRows = groupRows.filter(function(r){ return norm(r.transactionType) === "sale"; });
-    var otherRows = groupRows.filter(function(r){ return norm(r.transactionType) !== "sale"; });
+    var saleRows = groupRows.filter(function(r){ return txnClass(r.transactionType) === "sale"; });
 
     var gross = round2(sumBy(saleRows, function(r){ return toNumber(r.grossAmount); }));
     var clearedTxn = saleRows.length;
-    var refund = round2(sumBy(otherRows, function(r){ return Math.abs(toNumber(r.grossAmount)); }));
+    var txnCount = groupRows.length; // every transaction type, for the dashboard's transaction count
+    var refund = round2(sumBy(groupRows, function(r){
+      var cls = txnClass(r.transactionType);
+      if (cls === "sale") return 0;
+      // A Reversal only reduces the payout when its own amount is negative.
+      if (cls === "reversal" && toNumber(r.grossAmount) >= 0) return 0;
+      return Math.abs(toNumber(r.grossAmount));
+    }));
 
     var merchantRate = masterEntry && pg.masterListRateColumn ? toRate(getByNormalizedKey(masterEntry.raw, pg.masterListRateColumn)) : 0;
     var bankCostRow = masterEntry ? bankCostIndex.get(norm(masterEntry.costId)) : null;
@@ -900,7 +932,7 @@
 
     return {
       name: pg.name, gross: gross, bankRate: bankRate, bankFee: bankFee, merchantRate: merchantRate,
-      noqoodyCharge: noqoodyCharge, clearedTxn: clearedTxn, ratePerTxn: ratePerTxn,
+      noqoodyCharge: noqoodyCharge, clearedTxn: clearedTxn, txnCount: txnCount, ratePerTxn: ratePerTxn,
       noqoodyChargePerTxn: noqoodyChargePerTxn, refund: refund, profit: profit, internalTransfer: internalTransfer
     };
   }
@@ -919,7 +951,15 @@
     var actualBankCharges = round2(sumBy(rows.filter(function(r){ return norm(r.transactionType) === "sale"; }), function(r){ return toNumber(r.commission); }));
 
     var manual = manualInputs[id] || { rent: 0, portalAmount: 0 };
-    var gain = (!isBelow && g.masterEntry) ? g.masterEntry.gainForBankCharge : 0;
+    // Gain For Bank Charges is a per-merchant figure applied once, on the primary (>= threshold)
+    // line. The flat Refund/Dispute charge is therefore counted across the merchant's ENTIRE
+    // transaction set (g.rows), not just this line's rows: Refund and Dispute amounts are negative,
+    // so the Below Amount split (gross < threshold) puts every one of them on the below line, where
+    // the gain is always zero. Counting per line would silently drop the charge for any merchant
+    // that has a Below Amount Rule.
+    var refundDisputeCount = countRefundDispute(g.rows);
+    var baseGain = g.masterEntry ? toNumber(g.masterEntry.gainForBankCharge) : 0;
+    var gain = isBelow ? 0 : round2(baseGain + GAIN_PER_REFUND_DISPUTE * refundDisputeCount);
     var fee = (!isBelow && g.masterEntry) ? g.masterEntry.payoutProcessingFee : 0;
 
     var bankDifference = round2(totalBankFee - actualBankCharges);
@@ -936,6 +976,8 @@
       label: g.merchantName + (isBelow ? " | BELOW " + threshold : ""),
       isBelow: isBelow,
       txnCount: rows.length,
+      refundDisputeCount: isBelow ? 0 : refundDisputeCount,
+      baseGainForBankCharge: isBelow ? 0 : round2(baseGain),
       groups: groups,
       totalProfit: totalProfit,
       totalBankFee: totalBankFee,
@@ -1014,20 +1056,33 @@
     var configuredGroupKeys = {};
     paymentGroups.forEach(function(pg){ configuredGroupKeys[norm(pg.name)] = true; });
     var otherCardTypeMap = new Map();
+    var unknownTxnTypeMap = new Map();
     var reportedSaleTxnCount = 0;
+    var reportedTxnCount = 0;
     sortedGroups.forEach(function(g){
       g.rows.forEach(function(r){
-        if (norm(r.transactionType) !== "sale") return;
-        reportedSaleTxnCount++;
+        var cls = txnClass(r.transactionType);
+        reportedTxnCount++;
+        if (cls === "sale") reportedSaleTxnCount++;
+        if (cls === "unknown"){
+          var t = String(r.transactionType === undefined || r.transactionType === null ? "" : r.transactionType).trim() || "(blank)";
+          unknownTxnTypeMap.set(t, (unknownTxnTypeMap.get(t) || 0) + 1);
+        }
         if (configuredGroupKeys[norm(r.cardType2)]) return;
         var label = String(r.cardType2 === undefined || r.cardType2 === null ? "" : r.cardType2).trim() || "(blank Card Type 2)";
-        var entry = otherCardTypeMap.get(label) || { label: label, clearedTxn: 0, gross: 0 };
-        entry.clearedTxn += 1;
-        entry.gross = round2(entry.gross + toNumber(r.grossAmount));
+        var entry = otherCardTypeMap.get(label) || { label: label, txnCount: 0, clearedTxn: 0, gross: 0 };
+        entry.txnCount += 1;
+        if (cls === "sale"){
+          entry.clearedTxn += 1;
+          entry.gross = round2(entry.gross + toNumber(r.grossAmount));
+        }
         otherCardTypeMap.set(label, entry);
       });
     });
-    var otherCardTypes = Array.from(otherCardTypeMap.values()).sort(function(a, b){ return b.clearedTxn - a.clearedTxn; });
+    var otherCardTypes = Array.from(otherCardTypeMap.values()).sort(function(a, b){ return b.txnCount - a.txnCount; });
+    var unknownTxnTypes = Array.from(unknownTxnTypeMap.entries())
+      .map(function(e){ return { label: e[0], count: e[1] }; })
+      .sort(function(a, b){ return b.count - a.count; });
 
     var byAccountCode = new Map();
     merchantLines.forEach(function(line){
@@ -1059,6 +1114,7 @@
           bankFee: sumLines(lines, function(l){ return l.groups[i].bankFee; }),
           noqoodyCharge: sumLines(lines, function(l){ return l.groups[i].noqoodyCharge; }),
           clearedTxn: sumBy(lines, function(l){ return l.groups[i].clearedTxn; }),
+          txnCount: sumBy(lines, function(l){ return l.groups[i].txnCount; }),
           // Summed because the reference export subtotals this column too, and the exported SUM
           // formula covers it — leaving it out made the cached value disagree with the formula.
           ratePerTxn: sumLines(lines, function(l){ return l.groups[i].ratePerTxn; }),
@@ -1102,7 +1158,9 @@
       unresolvedCount: unresolvedCount,
       excludedByFrequencyCount: excludedByFrequencyCount,
       otherCardTypes: otherCardTypes,
-      reportedSaleTxnCount: reportedSaleTxnCount
+      unknownTxnTypes: unknownTxnTypes,
+      reportedSaleTxnCount: reportedSaleTxnCount,
+      reportedTxnCount: reportedTxnCount
     };
   }
 
@@ -1190,6 +1248,10 @@
       return {
         name: pg.name,
         configured: true,
+        // Transaction count covers EVERY transaction type — Sale, Refund, Dispute and Reversal.
+        // clearedTxn (Sale only) is kept alongside it because it is what the report's Cleared Txn
+        // column and the per-transaction charge are based on.
+        txnCount: sumBy(lines, function(l){ return l.groups[i].txnCount; }),
         clearedTxn: sumBy(lines, function(l){ return l.groups[i].clearedTxn; }),
         internalTransfer: round2(sumBy(lines, function(l){ return l.groups[i].internalTransfer; })),
         profit: round2(sumBy(lines, function(l){ return l.groups[i].profit; }))
@@ -1198,6 +1260,7 @@
     categories.push({
       name: "Others",
       configured: false,
+      txnCount: sumBy(report.otherCardTypes, function(o){ return o.txnCount; }),
       clearedTxn: sumBy(report.otherCardTypes, function(o){ return o.clearedTxn; }),
       // Structurally zero: a Card Type 2 with no Card_Types row has no rate, no cost column and no
       // report section, so it never enters an Internal Transfer or Profit calculation anywhere.
@@ -1207,7 +1270,8 @@
       detail: report.otherCardTypes
     });
 
-    var totalTxn = sumBy(categories, function(c){ return c.clearedTxn; });
+    var totalTxn = sumBy(categories, function(c){ return c.txnCount; });
+    var totalClearedTxn = sumBy(categories, function(c){ return c.clearedTxn; });
     var totalPayout = round2(sumBy(categories, function(c){ return c.internalTransfer; }));
     var totalProfit = round2(sumBy(lines, function(l){ return l.totalProfit; }));
 
@@ -1226,17 +1290,20 @@
       "Grand Total · Total Internal Transfer", true);
     check("Total Profit Amount", totalProfit, report.grandTotal.totalProfit,
       "Merchant Reconciliation · Total Noqoody Profit", true);
-    check("Total Transaction Count", totalTxn, report.reportedSaleTxnCount,
+    check("Total Transaction Count", totalTxn, report.reportedTxnCount,
+      "All transactions in this payout", false);
+    check("Cleared (Sale) transactions", totalClearedTxn, report.reportedSaleTxnCount,
       "Sale transactions in this payout", false);
     var subtotalClearedTxn = report.accountCodeGroups.reduce(function(acc, g){
       return acc + sumBy(g.subtotal.groups, function(sg){ return sg.clearedTxn; });
     }, 0);
-    check("Cleared transactions in report sections", totalTxn - categories[categories.length - 1].clearedTxn,
+    check("Cleared transactions in report sections", totalClearedTxn - categories[categories.length - 1].clearedTxn,
       subtotalClearedTxn, "Sum of Account Code subtotals · Cleared Txn", false);
 
     return {
       categories: categories,
       totalTxn: totalTxn,
+      totalClearedTxn: totalClearedTxn,
       totalPayout: totalPayout,
       totalProfit: totalProfit,
       checks: checks,
@@ -1264,8 +1331,9 @@
       '<div class="dash-sub">Live from the processed transactions — refreshes on upload, frequency change and reprocessing</div></div>';
 
     html += '<div class="dash-grid lead">' +
-      dashCard({ lead: true, icon: ICON_PATHS.receipt, name: "Cleared Transactions",
-                 value: fmtCount(d.totalTxn), meta: "Sale transactions in this payout" }) +
+      dashCard({ lead: true, icon: ICON_PATHS.receipt, name: "Total Transactions",
+                 value: fmtCount(d.totalTxn),
+                 meta: "All transaction types · " + fmtCount(d.totalClearedTxn) + " cleared (Sale)" }) +
       dashCard({ lead: true, icon: ICON_PATHS.transfer, name: "Total Payout Amount",
                  value: fmtAmount(d.totalPayout), meta: "Total Internal Transfer" }) +
       dashCard({ lead: true, icon: ICON_PATHS.profit, name: "Total Profit Amount",
@@ -1285,12 +1353,13 @@
     var othersCat = d.categories[d.categories.length - 1];
 
     html += '<div class="dash-head"><div class="dash-title">Transaction count by payment category</div>' +
-      '<div class="dash-sub">Cleared (Sale) transactions · grouped by <strong>Card Type 2</strong> (temporary — Classification is not yet populated)</div></div>';
+      '<div class="dash-sub">All transaction types — Sale, Refund, Dispute and Reversal · grouped by <strong>Card Type 2</strong> (temporary — Classification is not yet populated)</div></div>';
     html += '<div class="dash-grid">' + d.categories.map(function(c){
       return dashCard({
-        icon: iconFor(c.name), name: c.name, value: fmtCount(c.clearedTxn), zero: c.clearedTxn === 0,
-        flagged: !c.configured && c.clearedTxn > 0,
-        meta: d.totalTxn > 0 ? ((c.clearedTxn / d.totalTxn) * 100).toFixed(1) + "% of cleared transactions" : "No transactions"
+        icon: iconFor(c.name), name: c.name, value: fmtCount(c.txnCount), zero: c.txnCount === 0,
+        flagged: !c.configured && c.txnCount > 0,
+        meta: (d.totalTxn > 0 ? ((c.txnCount / d.totalTxn) * 100).toFixed(1) + "% of transactions" : "No transactions") +
+              " · " + fmtCount(c.clearedTxn) + " cleared"
       });
     }).join("") + "</div>";
 
@@ -1299,18 +1368,27 @@
     html += '<div class="dash-grid">' + d.categories.map(function(c){
       return dashCard({
         icon: iconFor(c.name), name: c.name, value: fmtAmount(c.internalTransfer),
-        zero: c.internalTransfer === 0, flagged: !c.configured && c.clearedTxn > 0,
-        meta: fmtCount(c.clearedTxn) + " cleared txn"
+        zero: c.internalTransfer === 0, flagged: !c.configured && c.txnCount > 0,
+        meta: fmtCount(c.clearedTxn) + " cleared txn · " + fmtCount(c.txnCount) + " total"
       });
     }).join("") + "</div>";
 
-    if (othersCat.clearedTxn > 0){
-      html += '<div class="banner warn" style="margin:12px 0 0;"><strong>' + fmtCount(othersCat.clearedTxn) +
-        " cleared transaction(s) fall under Others</strong> — their Card Type 2 matches no row in the Card_Types sheet, so they carry no merchant rate, no bank rate and no report section. " +
+    if (othersCat.txnCount > 0){
+      html += '<div class="banner warn" style="margin:12px 0 0;"><strong>' + fmtCount(othersCat.txnCount) +
+        " transaction(s) fall under Others</strong> — their Card Type 2 matches no row in the Card_Types sheet, so they carry no merchant rate, no bank rate and no report section. " +
         "Their payout amount therefore reads 0.00 and their gross of " + fmtAmount(othersCat.gross) +
         " is excluded from every payout figure. Add these to Card_Types to bring them into the report: " +
-        othersCat.detail.map(function(o){ return "<strong>" + escapeHtml(o.label) + "</strong> (" + fmtCount(o.clearedTxn) + ")"; }).join(", ") +
+        othersCat.detail.map(function(o){ return "<strong>" + escapeHtml(o.label) + "</strong> (" + fmtCount(o.txnCount) + ")"; }).join(", ") +
         ".</div>";
+    }
+
+    // A transaction type outside Sale / Refund / Dispute / Reversal has no defined rule, so it keeps
+    // the original behaviour (absolute amount into Refund) and is reported rather than assumed.
+    if (report.unknownTxnTypes && report.unknownTxnTypes.length){
+      html += '<div class="banner warn" style="margin:12px 0 0;"><strong>Unrecognised transaction type(s) found.</strong> ' +
+        report.unknownTxnTypes.map(function(u){ return "<strong>" + escapeHtml(u.label) + "</strong> (" + fmtCount(u.count) + ")"; }).join(", ") +
+        ". No rule is defined for these, so each is counted as a transaction and its absolute amount is added to Refund — the original behaviour — but none receives the flat " +
+        fmtAmount(GAIN_PER_REFUND_DISPUTE) + " Refund/Dispute charge. Confirm the correct handling before relying on these rows.</div>";
     }
 
     return html;
