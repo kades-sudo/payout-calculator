@@ -1,0 +1,10 @@
+# Local test scaffolding: a copy of index.html whose CDN <script> tags are rewritten
+# to point at vendored library copies, because outbound CDN access is blocked in the
+# test container. Regenerated from index.html on every test run — never committed.
+index.local-test.html
+index.probe.html
+xlsx-js-style.local.js
+jszip.local.js
+
+# Generated analysis workbooks (contain real transaction data)
+*.xlsx
