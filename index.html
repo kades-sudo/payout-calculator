@@ -369,7 +369,7 @@
           <li data-step="cardtype2"><span class="dot"></span>Card Type 2 lookup</li>
           <li data-step="merchant"><span class="dot"></span>Merchant lookup (Terminal_Mapping → Merchant Key → Master_List)</li>
           <li data-step="wallet"><span class="dot"></span>Wallet Classification lookup (Prefix + Card Type rules)</li>
-          <li data-step="classification" class="pending-rule"><span class="dot"></span>Classification lookup<span class="tag">rule pending</span></li>
+          <li data-step="classification"><span class="dot"></span>Classification lookup (from the same Wallet_Rules row)</li>
           <li data-step="build"><span class="dot"></span>Create Process Raw Details</li>
         </ol>
       </div>
@@ -488,8 +488,13 @@
   };
   var WALLET_RULE_FIELD_CANDIDATES = {
     cardTypeOnOff: ["cardtypeonusoffus", "cardtypeonoffus", "cardtype"],
-    onMatch: ["walletclassificationprefixmatch", "prefixmatch", "match", "walletclassificationmatch"],
-    onNoMatch: ["walletclassificationnomatch", "nomatch", "walletclassificationnotmatch"]
+    onMatch: ["walletclassificationprefixmatch", "walletclassificationmatch", "prefixmatch", "match"],
+    onNoMatch: ["walletclassificationnomatch", "walletclassificationnotmatch", "nomatch"],
+    // Classification columns live on the same rule row. Left blank, the Wallet Classification value
+    // for that row is carried through unchanged — which is what keeps DEBIT CARD WALLET intact and
+    // makes a newly added card type work without filling anything in.
+    classOnMatch: ["classificationprefixmatch", "classificationmatch"],
+    classOnNoMatch: ["classificationnomatch", "classificationnotmatch"]
   };
 
   var MASTER_FIELD_CANDIDATES = {
@@ -663,12 +668,14 @@
       { PREFIX: "411111234" }, { PREFIX: "411111567" }, { PREFIX: "542418001" }, { PREFIX: "353011999" }
     ];
     var walletRulesRows = [
-      { "Card Type (On us/Off us)": "VISA-ON US",        "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD" },
-      { "Card Type (On us/Off us)": "MASTERCARD-ON US",  "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD" },
-      { "Card Type (On us/Off us)": "VISA-OFF US",       "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD" },
-      { "Card Type (On us/Off us)": "MASTERCARD-OFF US", "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD" },
-      { "Card Type (On us/Off us)": "JCB-ON US",         "Wallet Classification (Prefix Match)": "DEBIT CARD WALLET",  "Wallet Classification (No Match)": "DEBIT CARD" },
-      { "Card Type (On us/Off us)": "UNIONPAY-OFF US",   "Wallet Classification (Prefix Match)": "DEBIT CARD WALLET",  "Wallet Classification (No Match)": "DEBIT CARD" }
+      // Classification (Match) collapses the credit wallet label; the debit rows leave it blank, so the
+      // Wallet Classification value carries through and DEBIT CARD WALLET stays intact.
+      { "Card Type (On us/Off us)": "VISA-ON US",        "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD", "Classification (Match)": "CREDIT CARD", "Classification (No Match)": "" },
+      { "Card Type (On us/Off us)": "MASTERCARD-ON US",  "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD", "Classification (Match)": "CREDIT CARD", "Classification (No Match)": "" },
+      { "Card Type (On us/Off us)": "VISA-OFF US",       "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD", "Classification (Match)": "CREDIT CARD", "Classification (No Match)": "" },
+      { "Card Type (On us/Off us)": "MASTERCARD-OFF US", "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD", "Classification (Match)": "CREDIT CARD", "Classification (No Match)": "" },
+      { "Card Type (On us/Off us)": "JCB-ON US",         "Wallet Classification (Prefix Match)": "DEBIT CARD WALLET",  "Wallet Classification (No Match)": "DEBIT CARD",  "Classification (Match)": "",            "Classification (No Match)": "" },
+      { "Card Type (On us/Off us)": "UNIONPAY-OFF US",   "Wallet Classification (Prefix Match)": "DEBIT CARD WALLET",  "Wallet Classification (No Match)": "DEBIT CARD",  "Classification (Match)": "",            "Classification (No Match)": "" }
     ];
     var omsRows = [
       { "Reference Number":"REF-88001","Merchant ID":"100234","Location":"Manila","Terminal ID":"T-001","Transaction Type":"Sale","Transaction Date":"2026-09-15","Transaction Time":"09:12","Posting Date":"2026-09-16","Gross Amount":1250.00,"Commission":25.00,"Net Amount":1225.00,"Card Number":"411111******1111","Card Type (On us/Off us)":"VISA-ON US","Approved Code":"A1023","Invoice No":"INV-5001","Text Message":"Approved" },
@@ -821,7 +828,9 @@
       map.set(key, {
         cardTypeOnOff: String(ct === undefined || ct === null ? "" : ct).trim(),
         onMatch: String((resolver.onMatch ? row[resolver.onMatch] : "") || "").trim(),
-        onNoMatch: String((resolver.onNoMatch ? row[resolver.onNoMatch] : "") || "").trim()
+        onNoMatch: String((resolver.onNoMatch ? row[resolver.onNoMatch] : "") || "").trim(),
+        classOnMatch: String((resolver.classOnMatch ? row[resolver.classOnMatch] : "") || "").trim(),
+        classOnNoMatch: String((resolver.classOnNoMatch ? row[resolver.classOnNoMatch] : "") || "").trim()
       });
     });
     return map;
@@ -890,6 +899,10 @@
     var prefixSet = buildPrefixSet(prefixRows);
     var walletRules = buildWalletRulesIndex(walletRulesRows);
     var walletConfigured = prefixSet.size > 0 && walletRules.size > 0;
+    // Classification rides on the same sheet; it is considered configured as soon as any rule row
+    // carries a Classification column, since a blank cell is a meaningful value (carry through).
+    var classificationConfigured = walletConfigured && walletRulesRows && walletRulesRows.length &&
+      !!buildResolver(Object.keys(walletRulesRows[0]), WALLET_RULE_FIELD_CANDIDATES).classOnMatch;
     var omsRows = normalizeOmsRows(omsRowsRaw);
 
     var unmatchedMerchants = [];
@@ -907,6 +920,7 @@
       // Wallet Classification: first 6 digits of the card number against the prefix membership set,
       // then the Wallet_Rules row for this Card Type (On us/Off us) picks the match / no-match value.
       var walletClassification = "";
+      var classification = "";
       if (walletConfigured){
         var cardHead = leadingDigits(row.cardNumber, PREFIX_MATCH_DIGITS);
         if (cardHead.length < PREFIX_MATCH_DIGITS) walletStats.noCardDigits++;
@@ -915,6 +929,11 @@
         var rule = walletRules.get(cardKey);
         if (rule){
           walletClassification = prefixMatched ? rule.onMatch : rule.onNoMatch;
+          if (classificationConfigured){
+            var override = prefixMatched ? rule.classOnMatch : rule.classOnNoMatch;
+            // Blank means "same as Wallet Classification", not "empty".
+            classification = override !== "" ? override : walletClassification;
+          }
         } else {
           // No rule row for this Card Type (On us/Off us) — left blank and reported, never guessed.
           var label = String(row.cardTypeOnOff === undefined || row.cardTypeOnOff === null ? "" : row.cardTypeOnOff).trim() || "(blank)";
@@ -940,7 +959,7 @@
         cardType: cardHit ? cardHit.cardType : "",
         cardType2: cardHit ? cardHit.cardType2 : "",
         walletClassification: walletClassification,
-        classification: "",
+        classification: classification,
         approvedCode: row.approvedCode,
         invoiceNo: row.invoiceNo,
         textMessage: row.textMessage,
@@ -957,6 +976,7 @@
       unmatchedMerchants: unmatchedMerchants,
       unmatchedCardTypeCount: unmatchedCardTypeCount,
       walletConfigured: walletConfigured,
+      classificationConfigured: classificationConfigured,
       walletStats: walletStats,
       prefixCount: prefixSet.size,
       walletRuleCount: walletRules.size
@@ -1957,7 +1977,10 @@
         (ws.noCardDigits > 0 ? (" " + fmtCount(ws.noCardDigits) + " transaction(s) have fewer than " + PREFIX_MATCH_DIGITS +
           " leading digits in Card Number and are treated as no-match.") : "") +
         (noRuleCount > 0 ? ("<br><strong>" + fmtCount(noRuleCount) + " transaction(s) have no Wallet_Rules row</strong> and are left blank — add a row for: " +
-          noRuleTypes.map(function(t){ return "<strong>" + escapeHtml(t) + "</strong> (" + fmtCount(ws.noRule[t]) + ")"; }).join(", ") + ".") : "");
+          noRuleTypes.map(function(t){ return "<strong>" + escapeHtml(t) + "</strong> (" + fmtCount(ws.noRule[t]) + ")"; }).join(", ") + ".") : "") +
+        (result.classificationConfigured
+          ? "<br><strong>Classification</strong> comes from the Classification columns on the same rule row; a blank cell carries the Wallet Classification value through unchanged."
+          : "<br><strong>Classification</strong> is not configured — add <strong>Classification (Match)</strong> and <strong>Classification (No Match)</strong> columns to Wallet_Rules to fill that column.");
     }
     resultsCard.appendChild(walletBanner);
     if (state.isSample){
@@ -1977,6 +2000,7 @@
     function rulePending(col){
       if (!col.pending) return false;
       if (col.key === "walletClassification") return !result.walletConfigured;
+      if (col.key === "classification") return !result.classificationConfigured;
       return true;
     }
     COLUMNS.forEach(function(col){
@@ -2212,7 +2236,7 @@
     notice.innerHTML =
       "This report groups by Card Type 2 (payment group), only includes merchants tagged " + escapeHtml(state.frequency || "") + " in Master_List, and applies the Master_List / Terminal_Mapping / Bank_Cost / Card_Types connections and the Below Amount Rule split. " +
       "<strong>Actual Bank Charges</strong> is computed from the OMS Commission field. Not yet implemented, so treated as 0 / unused: " +
-      "<strong>Special_Rate</strong> overrides for Account Code 5, and <strong>Classification</strong> (rule still undefined — Wallet Classification is now resolved from the Prefix + Wallet_Rules sheets). " +
+      "<strong>Special_Rate</strong> overrides for Account Code 5. <strong>Wallet Classification</strong> and <strong>Classification</strong> are now resolved from the Prefix + Wallet_Rules sheets. " +
       "<strong>Rent</strong> and <strong>Portal Amount</strong> come from your payout portal, not from any uploaded sheet — enter them per merchant below; everything downstream recalculates live." +
       (report.unresolvedCount > 0 ? ("<br>" + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row and are excluded from this report.") : "") +
       (report.excludedByFrequencyCount > 0 ? ("<br>" + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency and are excluded from this report.") : "");

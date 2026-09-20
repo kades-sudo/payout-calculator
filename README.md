@@ -391,10 +391,76 @@ Regression after the change: sorting and per-merchant numbering intact, transact
 intact (gain 16.00 / 19.00 fixtures unchanged), dashboard reconciliation still zero mismatches, and
 1,775 / 1,775 exported formulas evaluate to their cached values.
 
+## Classification (same Wallet_Rules row)
+
+**Audit status: PENDING VERIFICATION.**
+
+### The rule
+
+Classification is resolved from two further columns on the **same `Wallet_Rules` row** that already
+drives Wallet Classification — same key (`Card Type (On us/Off us)`), same prefix-match outcome:
+
+| Column | Meaning |
+|---|---|
+| `Classification (Match)` | value when the card's first 6 digits are in the Prefix list |
+| `Classification (No Match)` | value when they are not |
+
+**A blank cell means "carry the Wallet Classification value through unchanged" — not "empty".** That
+is what keeps `DEBIT CARD WALLET` intact (its rows are deliberately left blank) and what makes a newly
+added card type work with nothing filled in, as specified. Header spellings
+`Classification (Prefix Match)` and `Classification (Match)` are both accepted.
+
+Net effect on the supplied data: the 267 credit-card-wallet rows fold back into `CREDIT CARD`;
+everything else is a straight copy of Wallet Classification.
+
+| Wallet Classification | → Classification | Rows |
+|---|---|---|
+| DEBIT CARD WALLET | DEBIT CARD WALLET | 1,174 |
+| CREDIT CARD | CREDIT CARD | 1,048 |
+| DEBIT CARD | DEBIT CARD | 958 |
+| CREDIT CARD WALLET | **CREDIT CARD** | 267 |
+| HIMYAN | HIMYAN | 260 |
+
+Resulting Classification: CREDIT CARD 1,315 · DEBIT CARD WALLET 1,174 · DEBIT CARD 958 · HIMYAN 260
+= 3,707 of 3,707, with zero blanks.
+
+### Why it lives on the Wallet_Rules row rather than its own sheet
+
+The rule was first described as a mapping keyed on the *Wallet Classification value* (a two-row
+exception list). Keyed that way it depends on the exact text of the wallet labels, so renaming a label
+would silently produce a wrong answer. Keying on `Card Type (On us/Off us)` + prefix match instead
+costs a few repeated cells but cannot break that way, keeps both columns independently editable, and
+avoids one column cascading into the other when configuration is incomplete.
+
+### Behaviour when the columns are absent
+
+The Classification columns are optional and detected independently of the Wallet Classification ones.
+Without them the column keeps its **rule pending** marker and stays blank, and the results banner says
+which columns to add. Nothing is guessed.
+
+### Verification
+
+Against the supplied Masterlist and the 3,707-row sample, the app's output matches a projection
+computed independently from the sheet — **0 mismatches** — and equals the rule as stated in
+conversation. Both the Process Raw Details export and the consolidated payout workbook carry the same
+distribution with **0 blank** Classification cells.
+
+Also tested: the sample-data path (which exercises the blank carry-through — `JCB-ON US` on a prefix
+match keeps `DEBIT CARD WALLET`, while the credit rows collapse to `CREDIT CARD`), and the previous
+Masterlist whose `Wallet_Rules` has no Classification columns (marker restored, banner names the
+columns to add, nothing invented).
+
+Regression after the change: sorting and per-merchant numbering intact; transaction-type fixtures
+unchanged (gain 16.00 / 19.00); dashboard reconciliation zero mismatches with all five checks still
+firing independently under a negative test; 1,775 / 1,775 exported formulas evaluate to their cached
+values.
+
 ### Still open after this update
 
-- `Classification` lookup rule — still undefined, so still not invented. The dashboard grouping
-  switches to `Classification` via one constant once it exists. (`Wallet Classification` is now
-  implemented — see the section above.)
+- The dashboard still groups by `Card Type 2`; `DASHBOARD_REFERENCE_FIELD` can be switched to
+  `Classification` now that the column is populated, but that has not been requested or tested.
+- A *future* non-debit wallet label (e.g. `AMEX WALLET`) has no stated rule. Under the blank default
+  it would carry through unchanged rather than collapsing the way credit and Himyan do; set that row's
+  `Classification (Match)` cell explicitly when such a card type is added.
 - `Special_Rate` (Account Code 5) overrides — still unimplemented.
 - Production verification of the dashboard totals and the duplicate report against a real payout run.
