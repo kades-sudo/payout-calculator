@@ -368,7 +368,7 @@
           <li data-step="cardtype"><span class="dot"></span>Card Type lookup</li>
           <li data-step="cardtype2"><span class="dot"></span>Card Type 2 lookup</li>
           <li data-step="merchant"><span class="dot"></span>Merchant lookup (Terminal_Mapping → Merchant Key → Master_List)</li>
-          <li data-step="wallet" class="pending-rule"><span class="dot"></span>Wallet Classification lookup<span class="tag">rule pending</span></li>
+          <li data-step="wallet"><span class="dot"></span>Wallet Classification lookup (Prefix + Card Type rules)</li>
           <li data-step="classification" class="pending-rule"><span class="dot"></span>Classification lookup<span class="tag">rule pending</span></li>
           <li data-step="build"><span class="dot"></span>Create Process Raw Details</li>
         </ol>
@@ -417,6 +417,8 @@
     bankCostRows: null,
     specialRateRows: null,
     cardTypesRows: null,
+    prefixRows: null,         // Prefix sheet — BIN membership list for Wallet Classification
+    walletRulesRows: null,    // Wallet_Rules sheet — Card Type (On us/Off us) -> match / no-match label
     frequency: null,
     omsFile: null,            // {name, rows}
     isSample: false,
@@ -434,7 +436,9 @@
     card_type_classification: ["cardtypeclassification", "cardclassification", "paymentgroupclassification"],
     bank_cost: ["bankcost", "bankcosttable"],
     special_rate: ["specialrate", "specialrates"],
-    card_types: ["cardtypes", "paymentgroups"]
+    card_types: ["cardtypes", "paymentgroups"],
+    prefix: ["prefix", "prefixes", "prefixlist", "bin", "binlist", "napstab"],
+    wallet_rules: ["walletrules", "walletclassification", "walletclassificationrules", "classificationrules"]
   };
   var SHEET_LABELS = {
     master_list: "Master_List",
@@ -442,7 +446,9 @@
     card_type_classification: "Card Type Classification",
     bank_cost: "Bank_Cost",
     special_rate: "Special_Rate",
-    card_types: "Card_Types"
+    card_types: "Card_Types",
+    prefix: "Prefix",
+    wallet_rules: "Wallet_Rules"
   };
   var REQUIRED_SHEETS = { master_list: true, card_type_classification: true };
 
@@ -480,6 +486,12 @@
     merchantKey: ["merchantkey"],
     accountCode: ["accountcode"]
   };
+  var WALLET_RULE_FIELD_CANDIDATES = {
+    cardTypeOnOff: ["cardtypeonusoffus", "cardtypeonoffus", "cardtype"],
+    onMatch: ["walletclassificationprefixmatch", "prefixmatch", "match", "walletclassificationmatch"],
+    onNoMatch: ["walletclassificationnomatch", "nomatch", "walletclassificationnotmatch"]
+  };
+
   var MASTER_FIELD_CANDIDATES = {
     mid: ["mid", "merchantid"],
     merchantKey: ["merchantkey"],
@@ -645,6 +657,19 @@
       { "Card Type": "Credit Card", "Master List Rate Column": "CC Merchant Rate", "Cost Table Column": "Credit Card", "Entry Source": "OMS Transactions", Order: "1" },
       { "Card Type": "Debit Card", "Master List Rate Column": "Debit Merchant Rate", "Cost Table Column": "Debit Card", "Entry Source": "OMS Transactions", Order: "2" }
     ];
+    // Prefixes are deliberately 9 digits here, as in a real BIN table, to exercise the first-6
+    // truncation: 411111/542418/353011 match, 400115/552211/622126 do not.
+    var prefixRows = [
+      { PREFIX: "411111234" }, { PREFIX: "411111567" }, { PREFIX: "542418001" }, { PREFIX: "353011999" }
+    ];
+    var walletRulesRows = [
+      { "Card Type (On us/Off us)": "VISA-ON US",        "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD" },
+      { "Card Type (On us/Off us)": "MASTERCARD-ON US",  "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD" },
+      { "Card Type (On us/Off us)": "VISA-OFF US",       "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD" },
+      { "Card Type (On us/Off us)": "MASTERCARD-OFF US", "Wallet Classification (Prefix Match)": "CREDIT CARD WALLET", "Wallet Classification (No Match)": "CREDIT CARD" },
+      { "Card Type (On us/Off us)": "JCB-ON US",         "Wallet Classification (Prefix Match)": "DEBIT CARD WALLET",  "Wallet Classification (No Match)": "DEBIT CARD" },
+      { "Card Type (On us/Off us)": "UNIONPAY-OFF US",   "Wallet Classification (Prefix Match)": "DEBIT CARD WALLET",  "Wallet Classification (No Match)": "DEBIT CARD" }
+    ];
     var omsRows = [
       { "Reference Number":"REF-88001","Merchant ID":"100234","Location":"Manila","Terminal ID":"T-001","Transaction Type":"Sale","Transaction Date":"2026-09-15","Transaction Time":"09:12","Posting Date":"2026-09-16","Gross Amount":1250.00,"Commission":25.00,"Net Amount":1225.00,"Card Number":"411111******1111","Card Type (On us/Off us)":"VISA-ON US","Approved Code":"A1023","Invoice No":"INV-5001","Text Message":"Approved" },
       { "Reference Number":"REF-88002","Merchant ID":"100567","Location":"Cebu","Terminal ID":"T-014","Transaction Type":"Sale","Transaction Date":"2026-09-15","Transaction Time":"10:47","Posting Date":"2026-09-16","Gross Amount":340.50,"Commission":6.81,"Net Amount":333.69,"Card Number":"542418******4444","Card Type (On us/Off us)":"MASTERCARD-ON US","Approved Code":"B7742","Invoice No":"INV-5002","Text Message":"Approved" },
@@ -660,6 +685,8 @@
       bankCostRows: bankCostRows,
       specialRateRows: specialRateRows,
       cardTypesRows: cardTypesRows,
+      prefixRows: prefixRows,
+      walletRulesRows: walletRulesRows,
       omsRows: omsRows
     };
   }
@@ -754,6 +781,52 @@
 
   // Card_Types defines the payout report's payment-group blocks dynamically: which Master_List
   // column holds a merchant's rate for that group, and which Bank_Cost column holds the bank's rate.
+  // ---- Wallet Classification (Prefix membership + Card Type rules) ----
+  // The Prefix sheet is a membership list, not a classifier: it answers only "is this card's BIN in
+  // the table?". Card Type (On us/Off us) still decides the card's rail, so a co-badged BIN that
+  // appears under both NAPS and Visa is labeled correctly either way — the prefix only chooses
+  // between the rule row's match and no-match value.
+  //
+  // Both the prefix and the card number are compared on their FIRST 6 DIGITS ONLY, whatever their
+  // full length. That is the rule as specified, and it is also all the OMS feed allows: card numbers
+  // arrive masked after 6 digits (######XXXXXX####).
+  var PREFIX_MATCH_DIGITS = 6;
+
+  function leadingDigits(value, count){
+    var m = String(value === undefined || value === null ? "" : value).trim().match(/^[0-9]+/);
+    return m ? m[0].slice(0, count) : "";
+  }
+
+  function buildPrefixSet(rows){
+    var set = new Set();
+    if (!rows || !rows.length) return set;
+    var key = resolveSingle(Object.keys(rows[0]), ["prefix", "bin", "prefixno", "binprefix"]);
+    if (!key) key = Object.keys(rows[0])[0]; // single-column sheet: fall back to the only column
+    rows.forEach(function(row){
+      // Excel stores these as numbers; the raw digits are what matter, not the cell type.
+      var head = leadingDigits(row[key], PREFIX_MATCH_DIGITS);
+      if (head.length === PREFIX_MATCH_DIGITS) set.add(head);
+    });
+    return set;
+  }
+
+  function buildWalletRulesIndex(rows){
+    var map = new Map();
+    if (!rows || !rows.length) return map;
+    var resolver = buildResolver(Object.keys(rows[0]), WALLET_RULE_FIELD_CANDIDATES);
+    rows.forEach(function(row){
+      var ct = resolver.cardTypeOnOff ? row[resolver.cardTypeOnOff] : "";
+      var key = norm(ct);
+      if (!key || map.has(key)) return; // first rule row wins
+      map.set(key, {
+        cardTypeOnOff: String(ct === undefined || ct === null ? "" : ct).trim(),
+        onMatch: String((resolver.onMatch ? row[resolver.onMatch] : "") || "").trim(),
+        onNoMatch: String((resolver.onNoMatch ? row[resolver.onNoMatch] : "") || "").trim()
+      });
+    });
+    return map;
+  }
+
   function buildPaymentGroups(rows){
     if (!rows || !rows.length) return [];
     var headers = Object.keys(rows[0]);
@@ -810,14 +883,18 @@
     });
   }
 
-  function runPipeline(masterListRows, cardTypeMatrix, omsRowsRaw, terminalMappingRows){
+  function runPipeline(masterListRows, cardTypeMatrix, omsRowsRaw, terminalMappingRows, prefixRows, walletRulesRows){
     var cardTypeMap = buildCardTypeMap(cardTypeMatrix);
     var terminalMapIndex = buildTerminalMapIndex(terminalMappingRows);
     var masterListIndex = buildMasterListIndex(masterListRows);
+    var prefixSet = buildPrefixSet(prefixRows);
+    var walletRules = buildWalletRulesIndex(walletRulesRows);
+    var walletConfigured = prefixSet.size > 0 && walletRules.size > 0;
     var omsRows = normalizeOmsRows(omsRowsRaw);
 
     var unmatchedMerchants = [];
     var unmatchedCardTypeCount = 0;
+    var walletStats = { matched: 0, unmatched: 0, noRule: {}, noCardDigits: 0 };
 
     var processed = omsRows.map(function(row){
       var res = resolveMerchant(row, terminalMapIndex, masterListIndex);
@@ -826,6 +903,24 @@
       var cardKey = norm(row.cardTypeOnOff);
       var cardHit = cardTypeMap.get(cardKey);
       if (!cardHit) unmatchedCardTypeCount++;
+
+      // Wallet Classification: first 6 digits of the card number against the prefix membership set,
+      // then the Wallet_Rules row for this Card Type (On us/Off us) picks the match / no-match value.
+      var walletClassification = "";
+      if (walletConfigured){
+        var cardHead = leadingDigits(row.cardNumber, PREFIX_MATCH_DIGITS);
+        if (cardHead.length < PREFIX_MATCH_DIGITS) walletStats.noCardDigits++;
+        var prefixMatched = cardHead.length === PREFIX_MATCH_DIGITS && prefixSet.has(cardHead);
+        if (prefixMatched) walletStats.matched++; else walletStats.unmatched++;
+        var rule = walletRules.get(cardKey);
+        if (rule){
+          walletClassification = prefixMatched ? rule.onMatch : rule.onNoMatch;
+        } else {
+          // No rule row for this Card Type (On us/Off us) — left blank and reported, never guessed.
+          var label = String(row.cardTypeOnOff === undefined || row.cardTypeOnOff === null ? "" : row.cardTypeOnOff).trim() || "(blank)";
+          walletStats.noRule[label] = (walletStats.noRule[label] || 0) + 1;
+        }
+      }
 
       return {
         referenceNumber: row.referenceNumber,
@@ -844,7 +939,7 @@
         cardTypeOnOff: row.cardTypeOnOff,
         cardType: cardHit ? cardHit.cardType : "",
         cardType2: cardHit ? cardHit.cardType2 : "",
-        walletClassification: "",
+        walletClassification: walletClassification,
         classification: "",
         approvedCode: row.approvedCode,
         invoiceNo: row.invoiceNo,
@@ -857,7 +952,15 @@
       };
     });
 
-    return { processed: processed, unmatchedMerchants: unmatchedMerchants, unmatchedCardTypeCount: unmatchedCardTypeCount };
+    return {
+      processed: processed,
+      unmatchedMerchants: unmatchedMerchants,
+      unmatchedCardTypeCount: unmatchedCardTypeCount,
+      walletConfigured: walletConfigured,
+      walletStats: walletStats,
+      prefixCount: prefixSet.size,
+      walletRuleCount: walletRules.size
+    };
   }
 
   /* ---------------- payout report ---------------- */
@@ -1575,7 +1678,8 @@
   function recomputeMasterSheets(){
     renderMasterFileList();
 
-    var firstMatch = { terminal_mapping: null, card_type_classification: null, bank_cost: null, special_rate: null, card_types: null };
+    var firstMatch = { terminal_mapping: null, card_type_classification: null, bank_cost: null, special_rate: null,
+                       card_types: null, prefix: null, wallet_rules: null };
     var masterListRowsMerged = [];
     var masterListFound = false;
 
@@ -1603,6 +1707,8 @@
     state.bankCostRows = firstMatch.bank_cost ? XLSX.utils.sheet_to_json(firstMatch.bank_cost, { defval: "" }) : null;
     state.specialRateRows = firstMatch.special_rate ? XLSX.utils.sheet_to_json(firstMatch.special_rate, { defval: "" }) : null;
     state.cardTypesRows = firstMatch.card_types ? XLSX.utils.sheet_to_json(firstMatch.card_types, { defval: "" }) : null;
+    state.prefixRows = firstMatch.prefix ? XLSX.utils.sheet_to_json(firstMatch.prefix, { defval: "" }) : null;
+    state.walletRulesRows = firstMatch.wallet_rules ? XLSX.utils.sheet_to_json(firstMatch.wallet_rules, { defval: "" }) : null;
 
     renderSheetChecks();
     renderValidationPanel();
@@ -1617,7 +1723,9 @@
       terminal_mapping: state.terminalMappingRows,
       bank_cost: state.bankCostRows,
       special_rate: state.specialRateRows,
-      card_types: state.cardTypesRows
+      card_types: state.cardTypesRows,
+      prefix: state.prefixRows,
+      wallet_rules: state.walletRulesRows
     };
     els.sheetChecks.innerHTML = Object.keys(SHEET_LABELS).map(function(id){
       var rows = rowsById[id];
@@ -1686,6 +1794,8 @@
     state.bankCostRows = sample.bankCostRows;
     state.specialRateRows = sample.specialRateRows;
     state.cardTypesRows = sample.cardTypesRows;
+    state.prefixRows = sample.prefixRows;
+    state.walletRulesRows = sample.walletRulesRows;
     state.omsFile = { name: "OMS_Raw_Transactions_sample.xlsx (example)", rows: sample.omsRows };
     state.isSample = true;
     if (!state.frequency) setFrequency("Daily");
@@ -1735,7 +1845,8 @@
         prev.classList.remove("active"); prev.classList.add("done");
       }
       if (i >= order.length){
-        var result = runPipeline(state.masterListRows, state.cardTypeMatrix, state.omsFile.rows, state.terminalMappingRows);
+        var result = runPipeline(state.masterListRows, state.cardTypeMatrix, state.omsFile.rows, state.terminalMappingRows,
+                                 state.prefixRows, state.walletRulesRows);
         state.result = result;
         state.payoutReport = null;
         state.manualInputs = {};
@@ -1821,6 +1932,34 @@
       banner.innerHTML = "⚠ " + unmatchedCount + " transaction" + (unmatchedCount === 1 ? "" : "s") + " reference a Merchant ID not found in the Master_List and are flagged below for review.";
       resultsCard.appendChild(banner);
     }
+
+    // Wallet Classification outcome — what the prefix lookup actually did, and anything it could not
+    // label, so a blank is never left to be discovered later in the payout report.
+    var ws = result.walletStats || { matched: 0, unmatched: 0, noRule: {}, noCardDigits: 0 };
+    var noRuleTypes = Object.keys(ws.noRule || {});
+    var noRuleCount = noRuleTypes.reduce(function(a, k){ return a + ws.noRule[k]; }, 0);
+    var walletBanner = document.createElement("div");
+    if (!result.walletConfigured){
+      walletBanner.className = "banner warn";
+      walletBanner.innerHTML = "<strong>Wallet Classification is not configured.</strong> " +
+        "Add a <strong>Prefix</strong> sheet (the BIN membership list) and a <strong>Wallet_Rules</strong> sheet " +
+        "(Card Type (On us/Off us) → match / no-match label) to your Master List workbook and the column below will fill in. " +
+        "Nothing is guessed while they are missing." +
+        (state.prefixRows ? "" : " Prefix sheet: not found.") +
+        (state.walletRulesRows ? "" : " Wallet_Rules sheet: not found.");
+    } else {
+      walletBanner.className = noRuleCount > 0 ? "banner warn" : "banner sample";
+      walletBanner.innerHTML = "<strong>Wallet Classification</strong> resolved from " +
+        fmtCount(result.prefixCount) + " prefix" + (result.prefixCount === 1 ? "" : "es") +
+        " (first " + PREFIX_MATCH_DIGITS + " digits) and " + fmtCount(result.walletRuleCount) + " Card Type rule" +
+        (result.walletRuleCount === 1 ? "" : "s") + ". " +
+        fmtCount(ws.matched) + " transaction(s) matched a prefix, " + fmtCount(ws.unmatched) + " did not." +
+        (ws.noCardDigits > 0 ? (" " + fmtCount(ws.noCardDigits) + " transaction(s) have fewer than " + PREFIX_MATCH_DIGITS +
+          " leading digits in Card Number and are treated as no-match.") : "") +
+        (noRuleCount > 0 ? ("<br><strong>" + fmtCount(noRuleCount) + " transaction(s) have no Wallet_Rules row</strong> and are left blank — add a row for: " +
+          noRuleTypes.map(function(t){ return "<strong>" + escapeHtml(t) + "</strong> (" + fmtCount(ws.noRule[t]) + ")"; }).join(", ") + ".") : "");
+    }
+    resultsCard.appendChild(walletBanner);
     if (state.isSample){
       var sBanner = document.createElement("div");
       sBanner.className = "banner sample";
@@ -1833,10 +1972,17 @@
     var table = document.createElement("table");
     var thead = document.createElement("thead");
     var htr = document.createElement("tr");
+    // Wallet Classification stops being "rule pending" once a Prefix sheet and Wallet_Rules sheet
+    // are present — the lookup is then live, and only Classification remains undefined.
+    function rulePending(col){
+      if (!col.pending) return false;
+      if (col.key === "walletClassification") return !result.walletConfigured;
+      return true;
+    }
     COLUMNS.forEach(function(col){
       var th = document.createElement("th");
       th.textContent = col.label;
-      if (col.pending){
+      if (rulePending(col)){
         var mark = document.createElement("span");
         mark.className = "pending-mark";
         mark.textContent = "rule pending";
@@ -1858,7 +2004,9 @@
         var td = document.createElement("td");
         var v = row[col.key];
         if (col.pending){
-          td.innerHTML = (v === "" || v === undefined) ? '<span class="chip pending">pending</span>' : escapeHtml(v);
+          td.innerHTML = (v === "" || v === undefined)
+            ? (rulePending(col) ? '<span class="chip pending">pending</span>' : '<span class="chip bad">no rule</span>')
+            : escapeHtml(v);
         } else if (col.num) {
           td.className = "num";
           td.textContent = fmtAmount(v);
@@ -2064,7 +2212,7 @@
     notice.innerHTML =
       "This report groups by Card Type 2 (payment group), only includes merchants tagged " + escapeHtml(state.frequency || "") + " in Master_List, and applies the Master_List / Terminal_Mapping / Bank_Cost / Card_Types connections and the Below Amount Rule split. " +
       "<strong>Actual Bank Charges</strong> is computed from the OMS Commission field. Not yet implemented, so treated as 0 / unused: " +
-      "<strong>Special_Rate</strong> overrides for Account Code 5, and <strong>Wallet Classification / Classification</strong> (kept pending, and confirmed not to affect this report's grouping in the reference sample). " +
+      "<strong>Special_Rate</strong> overrides for Account Code 5, and <strong>Classification</strong> (rule still undefined — Wallet Classification is now resolved from the Prefix + Wallet_Rules sheets). " +
       "<strong>Rent</strong> and <strong>Portal Amount</strong> come from your payout portal, not from any uploaded sheet — enter them per merchant below; everything downstream recalculates live." +
       (report.unresolvedCount > 0 ? ("<br>" + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row and are excluded from this report.") : "") +
       (report.excludedByFrequencyCount > 0 ? ("<br>" + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency and are excluded from this report.") : "");

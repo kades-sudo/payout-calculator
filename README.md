@@ -318,9 +318,83 @@ why that category reads 889 all-types vs 887 cleared); Gain total `126.00` = bas
 reconciliation checks pass. Export re-verified: 1,726 / 1,726 formulas evaluate to their cached
 values, 114 columns all with widths, 80 hidden and outlined, freeze pane and `sheetFormatPr` intact.
 
+## Wallet Classification (Prefix + Wallet_Rules)
+
+**Audit status: PENDING VERIFICATION.**
+
+### The rule
+
+Two new Master List sheets drive it. The prefix table is a **membership list, not a classifier** — it
+answers only "is this card's BIN in the table?". `Card Type (On us/Off us)` still decides the card's
+rail, and the prefix only chooses between that rule row's two values:
+
+```
+prefixSet = { first 6 digits of every Prefix row }
+cardHead  = first 6 digits of Card Number
+matched   = prefixSet.has(cardHead)
+label     = matched ? rule.onMatch : rule.onNoMatch     // rule keyed on Card Type (On us/Off us)
+```
+
+Both sides are compared on their **first 6 digits only**, whatever their full length. That is the rule
+as specified, and it is also all the feed allows: card numbers arrive masked after 6 digits
+(`######XXXXXX####`).
+
+**Why this design sidesteps the co-badging problem.** An earlier analysis found 6 prefix heads
+carrying both NAPS and Visa transactions (`491227` alone splits 305 / 135). That would have been fatal
+had the prefix table been used to *determine* the card's rail. It isn't — both sets match the prefix
+but still receive different labels, because the card type differs. Nothing is mislabeled.
+
+### Sheets
+
+| Sheet | Shape | Notes |
+|---|---|---|
+| `Prefix` | one column (`PREFIX`) | 3,237 rows → 54 distinct 6-digit heads. Stored as numbers in the supplied workbook, which is safe here (all values start 4 or 5, no leading zeros to lose); `leadingDigits` reads the digits, not the cell type. |
+| `Wallet_Rules` | 3 columns, 9 rows | `Card Type (On us/Off us)`, `Wallet Classification (Prefix Match)`, `Wallet Classification (No Match)`. First row per card type wins. |
+
+Both are optional and resolved by the same fuzzy name matching as the other config sheets
+(`prefix`/`bin`/`napstab`, `walletrules`/`walletclassification`/...), and both appear in the sheet-check
+list on the left rail.
+
+### Behaviour when something is missing — nothing is ever guessed
+
+| Situation | Result |
+|---|---|
+| Either sheet absent | Column stays blank, keeps its **rule pending** marker, banner names which sheet is missing |
+| Card type has no `Wallet_Rules` row | Cell shows **no rule**, banner names the card type and its transaction count |
+| Card Number has fewer than 6 leading digits | Treated as no-match, counted and reported separately |
+
+The **rule pending** marker on the Wallet Classification header is now conditional — it disappears once
+both sheets are present. `Classification` still carries it, since that rule remains undefined.
+
+### Verification
+
+Against the supplied Masterlist and the 3,707-row NAPS_TAB sample, the app's output matches an
+independent projection computed straight from the two sheets — exactly, across all five labels:
+
+| Wallet Classification | Rows |
+|---|---|
+| DEBIT CARD WALLET | 1,174 |
+| CREDIT CARD | 1,048 |
+| DEBIT CARD | 958 |
+| CREDIT CARD WALLET | 267 |
+| HIMYAN | 260 |
+
+1,441 of 3,707 transactions match a prefix (38.9%); every row receives a label. Both the Process Raw
+Details export and the consolidated payout workbook carry the same distribution.
+
+Also tested: the sample-data path (3 match / 3 no-match, with 9-digit sample prefixes proving the
+first-6 truncation); the unconfigured path (old Masterlist — graceful, marker restored, clear banner);
+and a deliberately incomplete `Wallet_Rules` (both Himyan rows removed → 260 rows show **no rule** and
+are named in the banner, none guessed).
+
+Regression after the change: sorting and per-merchant numbering intact, transaction-type handling
+intact (gain 16.00 / 19.00 fixtures unchanged), dashboard reconciliation still zero mismatches, and
+1,775 / 1,775 exported formulas evaluate to their cached values.
+
 ### Still open after this update
 
-- `Classification` and `Wallet Classification` lookup rules — still undefined, so still not invented.
-  The dashboard grouping switches to `Classification` via one constant once they exist.
+- `Classification` lookup rule — still undefined, so still not invented. The dashboard grouping
+  switches to `Classification` via one constant once it exists. (`Wallet Classification` is now
+  implemented — see the section above.)
 - `Special_Rate` (Account Code 5) overrides — still unimplemented.
 - Production verification of the dashboard totals and the duplicate report against a real payout run.
