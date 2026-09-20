@@ -18,6 +18,12 @@
     --ok:#2E7D4F; --ok-soft:#DCEEE0;
     --pending:#5C6B62; --pending-soft:#E4E8E5;
     --shadow: 0 1px 2px rgba(22,33,27,0.06), 0 8px 24px -12px rgba(22,33,27,0.18);
+
+    /* Sidebar-only palette (reference design). Never used in the content area. */
+    --rail-w:248px;
+    --rail:#252845; --rail-2:#31355A; --rail-line:#3A3E63;
+    --rail-ink:#EDEFF8; --rail-muted:#A7ADCB;
+    --lime:#D6F35E; --lime-ink:#1E2A06;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
@@ -46,22 +52,28 @@
   body{
     background:var(--bg); color:var(--ink);
     font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-    padding-inline:20px; padding-block:28px 48px;
-    display:flex; justify-content:center;
+    margin:0; padding:0; display:block;
   }
-  .app{ width:100%; max-width:1320px; display:flex; flex-direction:column; gap:22px; }
+  /* Content sits beside the fixed rail and uses the full remaining width. */
+  .app{
+    margin-left:var(--rail-w); max-width:none;
+    display:flex; flex-direction:column; gap:18px;
+    padding:0 26px 40px;
+  }
 
-  /* ---- App shell: icon sidebar + content pane ---- */
-  .shell{ display:grid; grid-template-columns:250px minmax(0,1fr); gap:20px; align-items:start; }
+  /* ---- App shell: fixed full-height rail + scrolling content ---- */
+  .shell{ display:block; min-width:0; }
   .sidebar{
-    position:sticky; top:28px; background:var(--surface); border:1px solid var(--border);
-    border-radius:14px; box-shadow:var(--shadow); padding:14px 12px; display:flex;
-    flex-direction:column; gap:4px;
+    position:fixed; top:0; left:0; bottom:0; width:var(--rail-w);
+    background:var(--rail); color:var(--rail-ink);
+    border-right:1px solid var(--rail-line); border-radius:0;
+    padding:18px 14px; display:flex; flex-direction:column; gap:4px;
+    overflow-y:auto; z-index:40;
   }
-  .brand{ display:flex; align-items:center; gap:10px; padding:6px 8px 14px; }
+  .brand{ display:flex; align-items:center; gap:10px; padding:4px 8px 18px; }
   .brand-mark{
-    flex:none; width:32px; height:32px; border-radius:9px; display:grid; place-items:center;
-    background:var(--accent); color:var(--accent-contrast);
+    flex:none; width:34px; height:34px; border-radius:10px; display:grid; place-items:center;
+    background:var(--lime); color:var(--lime-ink);
   }
   .brand-mark svg{ width:18px; height:18px; display:block; }
   .brand-text{ min-width:0; }
@@ -69,34 +81,39 @@
     font-family:"IBM Plex Sans Condensed", ui-sans-serif, sans-serif; font-weight:700;
     font-size:15px; letter-spacing:-0.01em; line-height:1.15; white-space:nowrap;
   }
-  .brand-sub{ font-size:10.5px; color:var(--ink-muted); letter-spacing:.04em; text-transform:uppercase; }
+  .brand-name{ color:var(--rail-ink); }
+  .brand-sub{ font-size:10.5px; color:var(--rail-muted); letter-spacing:.04em; text-transform:uppercase; }
   .nav-btn{
     display:flex; align-items:center; gap:11px; width:100%; text-align:left; cursor:pointer;
-    background:none; border:1px solid transparent; border-radius:10px; padding:9px 10px;
-    font:inherit; font-size:13.5px; color:var(--ink-muted); transition:background .15s,color .15s;
+    background:none; border:1px solid transparent; border-radius:11px; padding:10px 11px;
+    font:inherit; font-size:13.5px; color:var(--rail-muted); transition:background .15s,color .15s;
   }
-  .nav-btn:hover{ background:var(--surface-2); color:var(--ink); }
+  .nav-btn:hover{ background:var(--rail-2); color:var(--rail-ink); }
   .nav-btn .nav-icon{
-    flex:none; width:28px; height:28px; border-radius:8px; display:grid; place-items:center;
-    background:var(--surface-2); color:var(--ink-muted); transition:background .15s,color .15s;
+    flex:none; width:28px; height:28px; border-radius:9px; display:grid; place-items:center;
+    background:var(--rail-2); color:var(--rail-muted); transition:background .15s,color .15s;
   }
   .nav-btn .nav-icon svg{ width:16px; height:16px; display:block; }
-  .nav-btn[aria-current="page"]{ background:var(--accent-soft); color:var(--accent); font-weight:600; }
-  .nav-btn[aria-current="page"] .nav-icon{ background:var(--accent); color:var(--accent-contrast); }
-  .nav-btn:focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+  .nav-btn[aria-current="page"]{ background:var(--lime); color:var(--lime-ink); font-weight:600; }
+  .nav-btn[aria-current="page"] .nav-icon{ background:rgba(30,42,6,0.14); color:var(--lime-ink); }
+  .nav-btn:focus-visible{ outline:2px solid var(--lime); outline-offset:2px; }
   .nav-label{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .nav-tag{
     flex:none; margin-left:auto; font-size:9px; letter-spacing:.04em; text-transform:uppercase;
-    color:var(--pending); background:var(--pending-soft); border-radius:99px; padding:2px 5px;
+    color:var(--rail-muted); background:var(--rail-2); border-radius:99px; padding:2px 5px;
   }
-  .nav-sep{ height:1px; background:var(--border); margin:10px 4px; }
-  .nav-foot{ font-size:10.5px; color:var(--ink-muted); line-height:1.45; padding:2px 8px; }
+  .nav-btn[aria-current="page"] .nav-tag{ color:var(--lime-ink); background:rgba(30,42,6,0.14); }
+  .nav-sep{ height:1px; background:var(--rail-line); margin:12px 4px; }
+  .nav-foot{ font-size:10.5px; color:var(--rail-muted); line-height:1.45; padding:2px 8px; margin-top:auto; }
 
-  /* Data-status strip — visible from every section */
+  /* Data-status strip — sticky, so the batch you are looking at stays identifiable while you
+     scroll a long report. The wrapper carries the page background so content cannot show through. */
+  .topbar{ position:sticky; top:0; z-index:30; background:var(--bg); padding:18px 0 12px; }
+  :root{ --topbar-h:84px; } /* strip height + its padding — the offset sticky columns sit below */
   .datastrip{
     display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px;
     background:var(--surface); border:1px solid var(--border); border-radius:12px;
-    padding:10px 14px; font-size:12px; box-shadow:var(--shadow);
+    padding:11px 15px; font-size:12px; box-shadow:var(--shadow);
   }
   .ds-item{ display:flex; align-items:center; gap:7px; color:var(--ink-muted); min-width:0; }
   .ds-item strong{ color:var(--ink); font-weight:600; }
@@ -131,11 +148,16 @@
   }
 
   @media (max-width: 900px){
-    .shell{ grid-template-columns:1fr; }
-    .sidebar{ position:static; flex-direction:row; align-items:center; flex-wrap:wrap; gap:6px; }
-    .brand{ padding:0 8px 0 4px; }
+    .sidebar{
+      position:static; width:auto; height:auto; bottom:auto; overflow:visible;
+      flex-direction:row; align-items:center; flex-wrap:wrap; gap:6px;
+      border-right:none; border-bottom:1px solid var(--rail-line); padding:12px 16px;
+    }
+    .app{ margin-left:0; padding-inline:16px; }
+    .brand{ padding:0 10px 0 2px; }
     .nav-btn{ width:auto; }
     .nav-sep, .nav-foot{ display:none; }
+    .topbar{ padding-top:14px; }
   }
 
   header.page-head{ display:flex; flex-direction:column; gap:6px; }
@@ -154,12 +176,22 @@
   @media (max-width: 860px){ .layout{ grid-template-columns: 1fr; } }
 
   .panel{
-    background:var(--surface); border:1px solid var(--border); border-radius:14px;
+    background:var(--surface); border:1px solid var(--border); border-radius:16px;
     box-shadow:var(--shadow); min-width:0;
   }
 
   /* ---- Stepper rail ---- */
-  .rail{ display:flex; flex-direction:column; }
+  /* The workflow rail follows you down a long report, so frequency and the uploaded files stay
+     reachable without scrolling back up — and the column beside the report is no longer dead space.
+     It scrolls inside itself when taller than the space available. */
+  .rail{
+    display:flex; flex-direction:column;
+    position:sticky; top:var(--topbar-h,84px);
+    max-height:calc(100vh - var(--topbar-h,84px) - 20px); overflow-y:auto;
+  }
+  @media (max-width: 900px){
+    .rail{ position:static; max-height:none; overflow:visible; }
+  }
   .step{ padding:18px 18px; border-bottom:1px solid var(--border); display:flex; gap:12px; }
   .step:last-child{ border-bottom:none; }
   .step-badge{
@@ -340,8 +372,8 @@
   .dash-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(186px,1fr)); gap:10px; }
   .dash-grid.lead{ grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); }
   .dash-card{
-    background:var(--surface); border:1px solid var(--border); border-radius:12px;
-    padding:13px 14px; display:flex; flex-direction:column; gap:8px; min-width:0;
+    background:var(--surface); border:1px solid var(--border); border-radius:14px;
+    padding:14px 15px; display:flex; flex-direction:column; gap:8px; min-width:0;
   }
   .dash-card.lead{ padding:16px 18px; }
   .dash-card-top{ display:flex; align-items:center; gap:9px; min-width:0; }
@@ -426,7 +458,7 @@
     <!-- RIGHT: the active section -->
     <div style="display:flex;flex-direction:column;gap:18px;min-width:0;">
 
-    <div class="datastrip" id="dataStrip"></div>
+    <div class="topbar"><div class="datastrip" id="dataStrip"></div></div>
 
     <!-- ===================== DASHBOARD ===================== -->
     <section class="view" id="viewDashboard" hidden aria-labelledby="dashTitle">

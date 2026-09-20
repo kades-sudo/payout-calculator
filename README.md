@@ -502,6 +502,61 @@ intact; dashboard-vs-report reconciliation still 0 mismatched categories with al
 independently under the negative test; **1,775 / 1,775** exported formulas evaluate to their cached
 values; no horizontal overflow at 1440px or 430px; no console errors.
 
+## Visual pass: fixed rail, sticky columns, reference palette
+
+**Audit status: PENDING VERIFICATION.** CSS and markup only — no calculation, lookup or export code
+was touched.
+
+### Scroll behaviour — what was measured and fixed
+
+Before: the sidebar was a 353px card in an 820px viewport. It stuck correctly, but left a large empty
+gap below it, and the data-status strip scrolled entirely out of view (measured at `top: -2193` at
+scroll 2229) — so deep in a long report there was nothing left saying which batch was on screen.
+
+| | Before | After |
+|---|---|---|
+| Sidebar | `sticky`, 353px card, dead space below | `fixed`, full viewport height at every scroll position |
+| Status strip | Scrolled away (`top: -2193`) | Sticky, `top: 18` at every scroll position |
+| Workflow rail (steps 1–3) | Scrolled away, leaving an empty column beside the report | Sticky below the strip, scrolls inside itself when taller than the space |
+| Section title | Scrolled away | Still scrolls — no longer a problem, since the fixed rail always shows the active section |
+
+The workflow rail being sticky is a usability gain as well as a layout one: frequency and the uploaded
+files stay reachable without scrolling back to the top of a 3,000px page.
+
+### Palette
+
+Taken from the supplied reference design, and **confined to the sidebar**:
+
+    --rail:#252845  --rail-2:#31355A  --rail-line:#3A3E63
+    --rail-ink:#EDEFF8  --rail-muted:#A7ADCB
+    --lime:#D6F35E  --lime-ink:#1E2A06
+
+A soft dark navy rather than black, with lime for the active nav item and the brand mark.
+
+**Lime is deliberately never used in the content area.** It is close enough to the `--ok` green that a
+lime element among the data could be read as "this passed" when it is only decoration — and on a
+screen where a failed reconciliation must be unmistakable, that is not an acceptable ambiguity. The
+content keeps its existing status colours unchanged, so ok / warning / danger stay meaningful.
+
+The rail tokens are intentionally identical in light and dark mode, as in the reference, where the
+sidebar is dark regardless of theme.
+
+### Also
+
+- Content is now full-bleed beside the rail instead of a centred 1320px column, so wide screens are
+  actually used.
+- Panels 14px → 16px radius, dashboard cards 12px → 14px, slightly more padding.
+- Under 900px the rail becomes a horizontal bar and everything reverts to a single column.
+
+### Verification
+
+Sidebar position and strip position were measured at four scroll depths (top, 1200, 3000, bottom) —
+`fixed`, full height, and `top: 18` throughout. Regression: sorting and per-merchant numbering intact;
+transaction-type fixtures unchanged (gain 16.00 / 19.00); Wallet Classification and Classification
+distributions unchanged; dashboard still reconciles with the report on every category with zero
+mismatches; **1,775 / 1,775** exported formulas evaluate to their cached values; no horizontal
+overflow at 1440px or 430px; no console errors.
+
 ### Still open after this update
 
 - The dashboard still groups by `Card Type 2`; `DASHBOARD_REFERENCE_FIELD` can be switched to
