@@ -455,6 +455,53 @@ unchanged (gain 16.00 / 19.00); dashboard reconciliation zero mismatches with al
 firing independently under a negative test; 1,775 / 1,775 exported formulas evaluate to their cached
 values.
 
+## App shell: icon sidebar and three sections
+
+**Audit status: PENDING VERIFICATION.** Presentation only — no calculation, lookup or export logic
+was touched.
+
+The single scrolling page is now an app shell: a persistent icon sidebar on the left and a content
+pane that swaps between three sections.
+
+| Section | State |
+|---|---|
+| **Dashboard** | Live. The payment-category cards moved here from inside the payout report. |
+| **Payout Calculator** | Live. Uploads, pipeline, Master List validation, Process Raw Details, payout report and Excel export — unchanged. |
+| **Reconciliation** | Placeholder. Documents the planned payout-vs-portal matching; nothing is computed. |
+
+### What moved, and what deliberately did not
+
+The dashboard cards render into the Dashboard section, but they are still produced by the **same call
+inside `renderPayoutReport`** — `renderDashboardView(report)` is invoked from there with the report
+that was just computed. One calculation, rendered in one place; the cards cannot drift from the table.
+Switching to the Dashboard re-renders from `state.payoutReport` rather than recomputing.
+
+The payout report keeps its own four stat tiles (Report Lines, Total Noqoody Profit, Total Merchant
+Payout, Total Transfer), so the calculator still carries a summary of its own.
+
+`Portal Amount` stays an editable column in the payout report feeding `Difference`, and the Excel
+format is untouched. When Reconciliation is built it should become a better way to populate and
+review those same values, not a replacement for them.
+
+### Supporting pieces
+
+- **Data-status strip** above the content pane — Master List sheets, frequency, OMS rows, processed
+  rows, payout report lines — so Dashboard and Reconciliation are never mysteriously empty. Refreshed
+  on upload, on processing and on report generation.
+- **Empty states that lead somewhere.** The Dashboard with no processed data, and the Reconciliation
+  placeholder, both carry a button that switches to the Payout Calculator.
+- The large page header was removed: the sidebar brand and each section's own title already named the
+  app and the section, so it only duplicated whichever section was open.
+
+### Verification
+
+Section switching, the in-page section links, and the status strip through a full run were tested in
+the browser. Regression after the change: Process Raw Details 22 columns with **0** blank Wallet
+Classification or Classification cells across 3,707 rows; payout report table and its four stat tiles
+intact; dashboard-vs-report reconciliation still 0 mismatched categories with all five checks firing
+independently under the negative test; **1,775 / 1,775** exported formulas evaluate to their cached
+values; no horizontal overflow at 1440px or 430px; no console errors.
+
 ### Still open after this update
 
 - The dashboard still groups by `Card Type 2`; `DASHBOARD_REFERENCE_FIELD` can be switched to
@@ -463,4 +510,7 @@ values.
   it would carry through unchanged rather than collapsing the way credit and Himyan do; set that row's
   `Classification (Match)` cell explicitly when such a card type is added.
 - `Special_Rate` (Account Code 5) overrides — still unimplemented.
+- **Reconciliation** is a placeholder. Before building it: how do portal amounts arrive (an export
+  file, or typed per merchant)? What identifies a merchant in the portal — MID alone cannot separate
+  shared-MID merchants? Compare against `Total Transfer`? What match tolerance?
 - Production verification of the dashboard totals and the duplicate report against a real payout run.

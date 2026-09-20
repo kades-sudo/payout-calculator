@@ -49,7 +49,94 @@
     padding-inline:20px; padding-block:28px 48px;
     display:flex; justify-content:center;
   }
-  .app{ width:100%; max-width:1180px; display:flex; flex-direction:column; gap:22px; }
+  .app{ width:100%; max-width:1320px; display:flex; flex-direction:column; gap:22px; }
+
+  /* ---- App shell: icon sidebar + content pane ---- */
+  .shell{ display:grid; grid-template-columns:250px minmax(0,1fr); gap:20px; align-items:start; }
+  .sidebar{
+    position:sticky; top:28px; background:var(--surface); border:1px solid var(--border);
+    border-radius:14px; box-shadow:var(--shadow); padding:14px 12px; display:flex;
+    flex-direction:column; gap:4px;
+  }
+  .brand{ display:flex; align-items:center; gap:10px; padding:6px 8px 14px; }
+  .brand-mark{
+    flex:none; width:32px; height:32px; border-radius:9px; display:grid; place-items:center;
+    background:var(--accent); color:var(--accent-contrast);
+  }
+  .brand-mark svg{ width:18px; height:18px; display:block; }
+  .brand-text{ min-width:0; }
+  .brand-name{
+    font-family:"IBM Plex Sans Condensed", ui-sans-serif, sans-serif; font-weight:700;
+    font-size:15px; letter-spacing:-0.01em; line-height:1.15; white-space:nowrap;
+  }
+  .brand-sub{ font-size:10.5px; color:var(--ink-muted); letter-spacing:.04em; text-transform:uppercase; }
+  .nav-btn{
+    display:flex; align-items:center; gap:11px; width:100%; text-align:left; cursor:pointer;
+    background:none; border:1px solid transparent; border-radius:10px; padding:9px 10px;
+    font:inherit; font-size:13.5px; color:var(--ink-muted); transition:background .15s,color .15s;
+  }
+  .nav-btn:hover{ background:var(--surface-2); color:var(--ink); }
+  .nav-btn .nav-icon{
+    flex:none; width:28px; height:28px; border-radius:8px; display:grid; place-items:center;
+    background:var(--surface-2); color:var(--ink-muted); transition:background .15s,color .15s;
+  }
+  .nav-btn .nav-icon svg{ width:16px; height:16px; display:block; }
+  .nav-btn[aria-current="page"]{ background:var(--accent-soft); color:var(--accent); font-weight:600; }
+  .nav-btn[aria-current="page"] .nav-icon{ background:var(--accent); color:var(--accent-contrast); }
+  .nav-btn:focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+  .nav-label{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .nav-tag{
+    flex:none; margin-left:auto; font-size:9px; letter-spacing:.04em; text-transform:uppercase;
+    color:var(--pending); background:var(--pending-soft); border-radius:99px; padding:2px 5px;
+  }
+  .nav-sep{ height:1px; background:var(--border); margin:10px 4px; }
+  .nav-foot{ font-size:10.5px; color:var(--ink-muted); line-height:1.45; padding:2px 8px; }
+
+  /* Data-status strip — visible from every section */
+  .datastrip{
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px;
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:10px 14px; font-size:12px; box-shadow:var(--shadow);
+  }
+  .ds-item{ display:flex; align-items:center; gap:7px; color:var(--ink-muted); min-width:0; }
+  .ds-item strong{ color:var(--ink); font-weight:600; }
+  .ds-dot{ flex:none; width:7px; height:7px; border-radius:50%; background:var(--pending); }
+  .ds-item.ok .ds-dot{ background:var(--ok); }
+  .ds-item.warn .ds-dot{ background:var(--warn); }
+  .ds-spacer{ margin-left:auto; }
+
+  .view[hidden]{ display:none; }
+  .view{ display:flex; flex-direction:column; gap:18px; min-width:0; }
+  .view-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+  .view-title{
+    font-family:"IBM Plex Sans Condensed", ui-sans-serif, sans-serif; font-weight:700;
+    font-size:clamp(22px,3vw,28px); letter-spacing:-0.01em; margin:0;
+  }
+  .view-head{ padding-top:2px; }
+  .view-sub{ color:var(--ink-muted); font-size:13px; max-width:70ch; line-height:1.5; margin-top:3px; }
+
+  /* Placeholder for a section that isn't built yet */
+  .placeholder{ padding:30px 26px; display:flex; flex-direction:column; gap:14px; }
+  .placeholder-icon{
+    width:44px; height:44px; border-radius:12px; display:grid; place-items:center;
+    background:var(--accent-soft); color:var(--accent);
+  }
+  .placeholder-icon svg{ width:24px; height:24px; }
+  .placeholder h3{ margin:0; font-size:16px; font-weight:600; }
+  .placeholder p{ margin:0; color:var(--ink-muted); font-size:13px; line-height:1.6; max-width:64ch; }
+  .placeholder ul{ margin:0; padding-left:18px; color:var(--ink-muted); font-size:13px; line-height:1.8; }
+  .placeholder .pill{
+    align-self:flex-start; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--warn); background:var(--warn-soft); border-radius:99px; padding:3px 9px; font-weight:600;
+  }
+
+  @media (max-width: 900px){
+    .shell{ grid-template-columns:1fr; }
+    .sidebar{ position:static; flex-direction:row; align-items:center; flex-wrap:wrap; gap:6px; }
+    .brand{ padding:0 8px 0 4px; }
+    .nav-btn{ width:auto; }
+    .nav-sep, .nav-foot{ display:none; }
+  }
 
   header.page-head{ display:flex; flex-direction:column; gap:6px; }
   .eyebrow{
@@ -305,11 +392,84 @@
 </style>
 
 <div class="app">
-  <header class="page-head">
-    <span class="eyebrow">Phase 1–2 · Process Raw Details &amp; Master List Ingestion</span>
-    <h1>Payout Calculator</h1>
-    <p class="subtitle">Upload the master list, choose a payout frequency, and drop in the OMS raw transaction export. Processing — card type lookup, card type 2 lookup, and merchant matching — runs automatically the moment you click Process Payout. The uploaded workbook's full set of configuration sheets is now recognized automatically by name.</p>
-  </header>
+  <div class="shell">
+    <!-- LEFT: section navigation -->
+    <nav class="sidebar" aria-label="Sections">
+      <div class="brand">
+        <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="2.5" width="18" height="19" rx="3"/><path d="M7 7h10"/><path d="M8 12h1.5M12 12h1.5M16 12h0.5"/><path d="M8 16h1.5M12 16h1.5M16 16v1.5"/></svg></span>
+        <span class="brand-text">
+          <span class="brand-name">Payout Calculator</span>
+          <span class="brand-sub">OMS Payment Ops</span>
+        </span>
+      </div>
+
+      <button type="button" class="nav-btn" id="navDashboard" data-view="dashboard">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7.5" height="9" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="5.5" rx="1.5"/><rect x="3" y="15" width="7.5" height="6" rx="1.5"/><rect x="13.5" y="11.5" width="7.5" height="9.5" rx="1.5"/></svg></span>
+        <span class="nav-label">Dashboard</span>
+      </button>
+
+      <button type="button" class="nav-btn" id="navCalculator" data-view="calculator" aria-current="page">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="2.5" width="16" height="19" rx="2.5"/><rect x="7.5" y="6" width="9" height="3.5" rx="1"/><path d="M8 13h0.01M12 13h0.01M16 13h0.01M8 17h0.01M12 17h0.01M16 17v0.01"/></svg></span>
+        <span class="nav-label">Payout Calculator</span>
+      </button>
+
+      <button type="button" class="nav-btn" id="navReconciliation" data-view="reconciliation">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-2.5 6h5L5 7Z"/><path d="M19 7l-2.5 6h5L19 7Z"/><path d="M8.5 21h7"/></svg></span>
+        <span class="nav-label">Reconciliation</span>
+        <span class="nav-tag">soon</span>
+      </button>
+
+      <div class="nav-sep"></div>
+      <p class="nav-foot">Data loaded once is shared by every section. Processing runs in your browser — nothing is uploaded anywhere.</p>
+    </nav>
+
+    <!-- RIGHT: the active section -->
+    <div style="display:flex;flex-direction:column;gap:18px;min-width:0;">
+
+    <div class="datastrip" id="dataStrip"></div>
+
+    <!-- ===================== DASHBOARD ===================== -->
+    <section class="view" id="viewDashboard" hidden aria-labelledby="dashTitle">
+      <div class="view-head">
+        <div>
+          <h2 class="view-title" id="dashTitle">Dashboard</h2>
+          <p class="view-sub">Transaction counts, payout amounts and profit for the processed batch, grouped by payment category. Figures come from the same calculation as the payout report, so the two can never disagree.</p>
+        </div>
+      </div>
+      <div id="dashboardBody"></div>
+    </section>
+
+    <!-- ===================== RECONCILIATION ===================== -->
+    <section class="view" id="viewReconciliation" hidden aria-labelledby="reconTitle">
+      <div class="view-head">
+        <div>
+          <h2 class="view-title" id="reconTitle">Reconciliation</h2>
+          <p class="view-sub">Match the payout report against the audit portal amount.</p>
+        </div>
+      </div>
+      <div class="panel placeholder">
+        <span class="placeholder-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-2.5 6h5L5 7Z"/><path d="M19 7l-2.5 6h5L19 7Z"/><path d="M8.5 21h7"/></svg></span>
+        <span class="pill">Planned</span>
+        <h3>Payout vs Portal Reconciliation</h3>
+        <p>This section will compare each merchant's computed payout against the amount recorded in the audit portal, and explain every difference. It is not built yet — the Payout Calculator is the focus first.</p>
+        <ul>
+          <li>Import portal amounts in bulk instead of typing them per merchant</li>
+          <li>Classify each merchant as Matched, Difference, Missing in portal, or Missing in report</li>
+          <li>Net difference summary with a per-merchant breakdown</li>
+          <li>Exportable reconciliation workbook</li>
+        </ul>
+        <p><strong>In the meantime:</strong> Portal Amount is entered per merchant in the payout report, and the Difference column is calculated there. <button type="button" class="sample-link" data-goto="calculator">Go to Payout Calculator →</button></p>
+      </div>
+    </section>
+
+    <!-- ===================== PAYOUT CALCULATOR ===================== -->
+    <section class="view" id="viewCalculator" aria-labelledby="calcTitle">
+      <div class="view-head">
+        <div>
+          <h2 class="view-title" id="calcTitle">Payout Calculator</h2>
+          <p class="view-sub">Upload the master list, choose a payout frequency, and drop in the OMS raw transaction export. Card type, Card Type 2, merchant, Wallet Classification and Classification lookups all run automatically when you click Process Payout.</p>
+        </div>
+      </div>
 
   <div class="layout">
     <!-- LEFT: workflow rail -->
@@ -400,8 +560,12 @@
       </div>
     </div>
   </div>
+    </section>
 
-  <footer>Phase 1: card type &amp; merchant lookups, Process Raw Details generation and verification download. Phase 2: full Master List workbook ingestion. Phase 4: Master List / Terminal_Mapping / Bank_Cost / Card_Types connections and the Daily/Weekly Payout Report calculation engine. Wallet Classification, Classification, Special_Rate (Account Code 5) overrides, and the exact source of Actual Bank Charges / Rent / Portal Amount remain open — see the notice in the report panel.</footer>
+    </div><!-- /content pane -->
+  </div><!-- /shell -->
+
+  <footer>Card type, Card Type 2, merchant, Wallet Classification and Classification lookups, Master List duplicate validation, the Daily/Weekly payout report with live Excel formulas, and the payment-category dashboard are implemented. Special_Rate (Account Code 5) overrides and the Reconciliation section remain to be built — and the source of Actual Bank Charges / Rent / Portal Amount is documented in the report panel notice.</footer>
 </div>
 
 <script>
@@ -420,6 +584,7 @@
     prefixRows: null,         // Prefix sheet — BIN membership list for Wallet Classification
     walletRulesRows: null,    // Wallet_Rules sheet — Card Type (On us/Off us) -> match / no-match label
     frequency: null,
+    view: "calculator",      // active section in the sidebar
     omsFile: null,            // {name, rows}
     isSample: false,
     result: null,             // {processed, unmatchedMerchants, unmatchedCardTypeCount}
@@ -1682,6 +1847,74 @@
       sections;
   }
 
+
+  /* ---------------- App shell: section navigation ---------------- */
+  var VIEWS = {
+    dashboard:      { btn: "navDashboard",      view: "viewDashboard" },
+    calculator:     { btn: "navCalculator",     view: "viewCalculator" },
+    reconciliation: { btn: "navReconciliation", view: "viewReconciliation" }
+  };
+
+  function showView(name){
+    if (!VIEWS[name]) name = "calculator";
+    Object.keys(VIEWS).forEach(function(key){
+      var cfg = VIEWS[key];
+      var btn = document.getElementById(cfg.btn);
+      var view = document.getElementById(cfg.view);
+      var active = key === name;
+      if (view) view.hidden = !active;
+      if (btn){
+        if (active) btn.setAttribute("aria-current", "page");
+        else btn.removeAttribute("aria-current");
+      }
+    });
+    state.view = name;
+    if (name === "dashboard") renderDashboardView(state.payoutReport);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  // The Dashboard shows the same figures the payout report computed. Until a report exists it shows
+  // an empty state pointing at the Payout Calculator rather than a blank pane.
+  function renderDashboardView(report){
+    var host = document.getElementById("dashboardBody");
+    if (!host) return;
+    if (!report){
+      host.innerHTML =
+        '<div class="panel placeholder">' +
+          '<span class="placeholder-icon">' + iconSvg(ICON_PATHS.receipt) + "</span>" +
+          "<h3>No processed data yet</h3>" +
+          "<p>Upload a Master List workbook and an OMS raw transaction file, run <strong>Process Payout</strong>, then generate the payout report. The dashboard fills in from that same calculation.</p>" +
+          '<p><button type="button" class="sample-link" data-goto="calculator">Go to Payout Calculator →</button></p>' +
+        "</div>";
+      return;
+    }
+    host.innerHTML = renderDashboard(report, state.frequency);
+  }
+
+  // Data-status strip — which files are loaded, shown from every section.
+  function renderDataStrip(){
+    var el = document.getElementById("dataStrip");
+    if (!el) return;
+    var sheetCount = state.masterFiles.length
+      ? [state.masterListRows, state.cardTypeMatrix, state.terminalMappingRows, state.bankCostRows,
+         state.specialRateRows, state.cardTypesRows, state.prefixRows, state.walletRulesRows]
+        .filter(function(x){ return !!x; }).length
+      : 0;
+    function item(ok, label, value){
+      return '<span class="ds-item ' + (ok ? "ok" : "") + '"><span class="ds-dot"></span>' +
+        escapeHtml(label) + " " + (value ? "<strong>" + value + "</strong>" : "<strong>—</strong>") + "</span>";
+    }
+    var omsRows = state.omsFile ? state.omsFile.rows.length : 0;
+    el.innerHTML =
+      item(!!state.masterListRows, "Master List", state.masterFiles.length ? (sheetCount + " sheet" + (sheetCount === 1 ? "" : "s")) : "") +
+      item(!!state.frequency, "Frequency", state.frequency || "") +
+      item(omsRows > 0, "OMS file", omsRows ? fmtCount(omsRows) + " rows" : "") +
+      item(!!state.result, "Processed", state.result ? fmtCount(state.result.processed.length) + " rows" : "") +
+      item(!!state.payoutReport, "Payout report", state.payoutReport ? fmtCount(state.payoutReport.merchantLines.length) + " lines" : "") +
+      '<span class="ds-spacer"></span>' +
+      (state.isSample ? '<span class="chip pending">example data</span>' : "");
+  }
+
   function renderMasterFileList(){
     els.masterFileList.innerHTML = state.masterFiles.map(function(f, i){
       return '<div class="file-chip"><span>' + escapeHtml(f.name) + '</span><button type="button" data-i="' + i + '" aria-label="Remove file">×</button></div>';
@@ -1826,6 +2059,7 @@
   });
 
   function updateStepStates(){
+    renderDataStrip();
     var step1Done = !!(state.masterListRows && state.cardTypeMatrix);
     var step2Done = !!state.frequency;
     var step3Done = !!(state.omsFile && state.omsFile.rows.length);
@@ -1868,6 +2102,7 @@
         var result = runPipeline(state.masterListRows, state.cardTypeMatrix, state.omsFile.rows, state.terminalMappingRows,
                                  state.prefixRows, state.walletRulesRows);
         state.result = result;
+        renderDataStrip();
         state.payoutReport = null;
         state.manualInputs = {};
         renderResults(result);
@@ -2179,6 +2414,7 @@
     var paymentGroups = buildPaymentGroups(state.cardTypesRows);
     state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs, state.frequency);
     renderPayoutReport(state.payoutReport);
+    renderDataStrip();
   }
 
   els.generateReportBtn.addEventListener("click", function(){
@@ -2242,13 +2478,12 @@
       (report.excludedByFrequencyCount > 0 ? ("<br>" + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency and are excluded from this report.") : "");
     body.appendChild(notice);
 
-    var dash = document.createElement("div");
-    dash.style.margin = "0 20px 4px";
-    dash.innerHTML = renderDashboard(report, state.frequency);
-    body.appendChild(dash);
+    // The dashboard is rendered from this same computed report, into the Dashboard section — one
+    // calculation, two places, so the cards can never disagree with the table below them.
+    renderDashboardView(report);
 
-    // No merchant matched the selected payout frequency: the dashboard above still renders, showing
-    // a genuine zero for every payment category, but there is no report table to draw.
+    // No merchant matched the selected payout frequency: the Dashboard still shows a genuine zero
+    // for every payment category, but there is no report table to draw here.
     if (!report.accountCodeGroups.length){
       var none = document.createElement("div");
       none.className = "banner warn";
@@ -2264,7 +2499,7 @@
 
     var summary = document.createElement("div");
     summary.className = "summary-grid";
-    summary.style.margin = "16px 20px 16px";
+    summary.style.margin = "0 20px 16px";
     summary.innerHTML =
       statTile(report.merchantLines.length, "Report Lines", "") +
       statTile(fmtAmount(report.grandTotal.totalProfit), "Total Noqoody Profit", "ok") +
@@ -2791,6 +3026,19 @@
 
   els.downloadReportBtn.addEventListener("click", downloadPayoutReport);
 
+  // Sidebar navigation + any in-page "go to section" link.
+  Object.keys(VIEWS).forEach(function(key){
+    var btn = document.getElementById(VIEWS[key].btn);
+    if (btn) btn.addEventListener("click", function(){ showView(key); });
+  });
+  document.addEventListener("click", function(e){
+    var t = e.target.closest ? e.target.closest("[data-goto]") : null;
+    if (t) showView(t.getAttribute("data-goto"));
+  });
+
+  showView("calculator");
+  renderDataStrip();
+  renderDashboardView(null);
   updateStepStates();
 })();
 </script>
