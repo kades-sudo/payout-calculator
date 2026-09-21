@@ -1079,3 +1079,62 @@ test defect, not an app one.
 Merchant search: 72 rows unfiltered, 4 for "NEW BALANCE", 5 by MID `777100432320320`, 72 when
 cleared. Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, control
 total still 3,707 / 1,245,071.15, no page errors.
+
+---
+
+## Excel drill-down: hyperlinked merchant names
+
+**Audit status: PENDING VERIFICATION.** The in-app drill-down panel was not what was asked for —
+the drill-down needed to work **inside the exported workbook**, in Excel.
+
+### Why it is a hyperlink and not a double-click
+
+A true double-click "Show Details" is an Excel *application* behaviour. It exists in exactly two
+places: on a real PivotTable, or behind a VBA macro. The payout report is a custom cross-tab (merged
+section banners, per-account subtotals, a reconciliation block) and cannot be a PivotTable without
+losing that layout; a macro would force `.xlsm`, an "Enable Content" prompt on every machine, and
+would not run in Excel Online or on mobile.
+
+A hyperlink needs no macro and works in Excel desktop, Mac, Online and mobile alike. Chosen over a
+PivotTable sheet and over `.xlsm` deliberately.
+
+### What the export now contains
+
+A third sheet, **Merchant Details** — every matched transaction grouped by the merchant the payout
+report groups it under (**MID + Merchant Key**), one block per merchant, each opened by a banner row
+naming the merchant, MID, Merchant Key, Account Code and transaction count. Blocks follow the
+report's own order.
+
+On the report sheet, each merchant's **Merchant** cell is an internal hyperlink to its banner row,
+styled as a link. Only the merchant's first row carries it; continuation rows are the same merchant.
+
+**Process Raw Details** gains an AutoFilter and a frozen header — the flat, sliceable view.
+Merchant Details cannot carry an AutoFilter because it has a header row per block, so the two sheets
+serve different purposes deliberately.
+
+### Verification
+
+```
+sheets                      : DAILY PAYOUT | Merchant Details | Process Raw Details
+hyperlinks on report sheet  : 41   (one per merchant, invalid targets: 0)
+Merchant Details            : 41 blocks, 41 header rows, 1,620 data rows
+Process Raw Details filter  : A1:V3708
+```
+
+Every link resolves to the right banner:
+
+```
+NEW BALANCE DOHA  -> row 53: NEW BALANCE DOHA — MID 777100432320320 · Merchant Key 2 · Account Code 4 · 33 transactions
+```
+
+The shared-MID case holds: that MID carries ten merchants and 355 transactions; the block for
+NEW BALANCE DOHA contains `{"NEW BALANCE DOHA": 33}` and nothing else.
+
+OOXML validated directly, since LibreOffice cannot load these exports at all (it fails identically
+on a pre-change export, so it is not a regression): all 12 parts well-formed; `sheet3.xml` declared
+in `workbook.xml`, `workbook.xml.rels` and `[Content_Types].xml`; element order in the report sheet
+is schema-correct (`sheetData -> mergeCells -> hyperlinks -> ignoredErrors`); internal links carry a
+`location` and need no relationship part. Amounts numeric, identifiers text.
+
+Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, control total
+3,707 / 1,245,071.15, in-app drill-down still returns 33 rows for the same merchant.
