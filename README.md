@@ -768,3 +768,87 @@ Every figure previously quoted from a `Process Raw Details` sheet was produced b
 scripts that used the same `Number()` parse, so they are **understated**. This includes the
 "758 unmatched transactions / QAR 79,007" finding and the shared-MID per-merchant breakdown; both
 need recomputing before they are relied on.
+
+---
+
+## Fix: shared-MID transactions were credited to the wrong merchant
+
+**Audit status: PENDING VERIFICATION.** Found from a report showing BURQAN TRADING under
+`Account Code (unassigned)` with 136 transactions and 10,530.50, when BURQAN has exactly one
+terminal and one transaction of 30.00.
+
+### Defect 1 — the MID-only fallback stole other merchants' transactions
+
+`resolveMerchant()` fell back to matching on MID alone when a transaction's `MID + Terminal ID`
+was not in Terminal_Mapping:
+
+```js
+if (!ml && !terminalMatched){
+  ml = masterListIndex.get(norm(row.merchantId) + "|");   // MID alone
+}
+```
+
+MID `777101639900128` is a shared NOQOODY aggregator MID carrying **461 transactions across 22
+terminals belonging to different merchants**. Only BURQAN's terminal (`10048839`) is mapped. For the
+other 21 terminals the fallback matched on MID alone and landed on the blank-Merchant-Key
+Master_List row — BURQAN — so **460 transactions belonging to other merchants were credited to
+BURQAN**, at BURQAN's rates.
+
+The fallback's stated purpose was to resolve single-terminal merchants that have no Terminal_Mapping
+row. Measured against the real data, that case accounts for **0 transactions**: every use of the
+fallback was the defect. It is removed. Matching is now strictly
+`MID + Terminal ID → Terminal_Mapping → Merchant Key → Master_List`, and an unmapped terminal is
+reported rather than guessed.
+
+### Defect 2 — the account code was taken from whichever row sorted first
+
+```js
+accountCode: row._accountCode && String(row._accountCode).trim() !== "" ? row._accountCode : "(unassigned)",
+```
+
+The group key is `MID | Merchant Key`, and BURQAN's Merchant Key is blank — the same as the rows the
+fallback attached. Its one correctly mapped transaction and the 460 stolen ones collapsed into a
+single group, and the account code came from the first row in file order:
+
+```
+file row 340   TID 10017805   unmapped   AC ""   <- first, so the group became "(unassigned)"
+BURQAN's mapped row is #333 of 461
+```
+
+The tag was read correctly and then discarded. The account code is now taken from a terminal-matched
+row, and a merchant whose terminals disagree is labelled `(conflicting: …)` rather than silently
+placed under one of them. No group in the current Terminal_Mapping spans more than one account code.
+
+### Unmatched transactions are now flagged by reason
+
+The two gaps need different actions, so they are counted and listed separately — on the summary
+tiles, in a banner naming the exact terminals and MIDs to add, on each row's status chip, and in the
+export's `Match Status` column:
+
+- `Terminal not in Terminal_Mapping` — the MID is known, the terminal is not
+- `MID not in Master_List` — the merchant is not configured at all
+
+### Verification
+
+BURQAN now reports under **Account Code 9**, 1 transaction, **30.00**.
+
+The run reconciles to the source file exactly:
+
+| | txns | gross |
+|---|---|---|
+| Matched | 2,845 | 1,137,354.15 |
+| Terminal not in Terminal_Mapping | 776 | 47,464.50 |
+| MID not in Master_List | 86 | 60,252.50 |
+| **total** | **3,707** | **1,245,071.15** |
+
+That total is the independently parsed total of the OMS file — nothing is lost or double-counted.
+Account Code sections in the export: 4, 9, 12, 13, 15, 16; `(unassigned)` no longer appears.
+
+Regression: 107/107 rate pairs match the Masterlist, row shape and transaction-type handling
+unchanged, no page errors.
+
+### Still open
+
+- 41 terminals (776 transactions, QAR 47,464.50) need Terminal_Mapping rows.
+- 5 MIDs (86 transactions, QAR 60,252.50) are not in Master_List at all — including the Weekly
+  merchants not yet added.

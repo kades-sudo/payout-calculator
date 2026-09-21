@@ -999,6 +999,10 @@
 
   function buildMasterListIndex(rows){
     var map = new Map();
+    // Every MID present in Master_List under any Merchant Key. Used only to tell an unmatched
+    // transaction apart: a known MID needs a Terminal_Mapping row, an unknown MID needs a
+    // Master_List row first. It is never used to match a transaction.
+    map.midsPresent = new Set();
     if (!rows || !rows.length) return map;
     var headers = Object.keys(rows[0]);
     var resolver = buildResolver(headers, MASTER_FIELD_CANDIDATES);
@@ -1006,6 +1010,7 @@
       var mid = resolver.mid ? row[resolver.mid] : "";
       if (String(mid === undefined || mid === null ? "" : mid).trim() === "") return;
       var key = norm(mid) + "|" + norm(resolver.merchantKey ? row[resolver.merchantKey] : "");
+      map.midsPresent.add(norm(mid));
       map.set(key, {
         raw: row,
         merchantName: resolver.merchantName ? row[resolver.merchantName] : "",
@@ -1104,25 +1109,34 @@
     return groups;
   }
 
-  // Resolves one OMS transaction to its Master_List configuration row.
-  // Falls back to a plain MID match (against a blank-Merchant-Key Master_List row) when Terminal_Mapping
-  // doesn't cover the transaction's terminal, so single-terminal merchants still resolve without it.
+  // Resolves one OMS transaction to its Master_List configuration row, strictly through
+  // MID + Terminal ID -> Terminal_Mapping -> Merchant Key -> Master_List.
+  //
+  // There is deliberately NO fallback to a MID-only match. Aggregator MIDs are shared by many
+  // merchants (one MID in the sample carries 461 transactions across 22 terminals belonging to
+  // different merchants), so matching on MID alone silently credited every unmapped terminal to
+  // whichever Master_List row happened to have a blank Merchant Key — wrong merchant, wrong rates,
+  // wrong payout, and no error anywhere. A transaction whose terminal is not mapped is reported as
+  // unmatched instead of guessed.
   function resolveMerchant(row, terminalMapIndex, masterListIndex){
     var tm = terminalMapIndex.get(norm(row.merchantId) + "|" + norm(row.terminalId));
-    var terminalMatched = !!tm;
-    var merchantKey = tm ? tm.merchantKey : "";
-    var accountCode = tm ? tm.accountCode : "";
-    var ml = masterListIndex.get(norm(row.merchantId) + "|" + norm(merchantKey));
-    if (!ml && !terminalMatched){
-      ml = masterListIndex.get(norm(row.merchantId) + "|");
+    if (!tm){
+      var midKnown = masterListIndex.midsPresent && masterListIndex.midsPresent.has(norm(row.merchantId));
+      return {
+        terminalMatched: false, merchantMatched: false, merchant: "",
+        accountCode: "", merchantKey: "", masterListEntry: null,
+        unmatchedReason: midKnown ? "Terminal not in Terminal_Mapping" : "MID not in Master_List"
+      };
     }
+    var ml = masterListIndex.get(norm(row.merchantId) + "|" + norm(tm.merchantKey));
     return {
-      terminalMatched: terminalMatched,
+      terminalMatched: true,
       merchantMatched: !!ml,
       merchant: ml ? ml.merchantName : "",
-      accountCode: accountCode,
-      merchantKey: merchantKey,
-      masterListEntry: ml || null
+      accountCode: tm.accountCode,
+      merchantKey: tm.merchantKey,
+      masterListEntry: ml || null,
+      unmatchedReason: ml ? "" : "Merchant not in Master_List"
     };
   }
 
@@ -1159,7 +1173,8 @@
 
     var processed = omsRows.map(function(row){
       var res = resolveMerchant(row, terminalMapIndex, masterListIndex);
-      if (!res.merchantMatched) unmatchedMerchants.push(row);
+      // Carry the reason with the row: the banner buckets by it, and the raw OMS row has no such field.
+      if (!res.merchantMatched) unmatchedMerchants.push(Object.assign({}, row, { unmatchedReason: res.unmatchedReason || "" }));
 
       var cardKey = norm(row.cardTypeOnOff);
       var cardHit = cardTypeMap.get(cardKey);
@@ -1212,6 +1227,7 @@
         invoiceNo: row.invoiceNo,
         textMessage: row.textMessage,
         merchantMatched: res.merchantMatched,
+        unmatchedReason: res.unmatchedReason || "",
         _accountCode: res.accountCode,
         _merchantKey: res.merchantKey,
         _masterListEntry: res.masterListEntry,
@@ -1427,12 +1443,29 @@
           mid: row.merchantId === undefined || row.merchantId === null ? "" : String(row.merchantId),
           merchantKey: row._merchantKey,
           merchantName: row.merchant,
-          accountCode: row._accountCode && String(row._accountCode).trim() !== "" ? row._accountCode : "(unassigned)",
+          accountCode: "(unassigned)",
+          accountCodesSeen: {},
           masterEntry: row._masterListEntry,
           rows: []
         });
       }
-      merchantGroups.get(key).rows.push(row);
+      var group = merchantGroups.get(key);
+      // The account code is a property of the terminal, so it is taken from a mapped row — never
+      // from whichever row happened to sort first, which previously let one unmapped transaction
+      // drop a correctly tagged merchant into "(unassigned)".
+      var code = row._accountCode === undefined || row._accountCode === null ? "" : String(row._accountCode).trim();
+      if (code !== ""){
+        group.accountCodesSeen[code] = (group.accountCodesSeen[code] || 0) + 1;
+        if (group.accountCode === "(unassigned)") group.accountCode = row._accountCode;
+      }
+      group.rows.push(row);
+    });
+
+    // A merchant whose terminals disagree on Account Code cannot be silently placed under one of
+    // them; the report says so instead of picking.
+    merchantGroups.forEach(function(group){
+      var codes = Object.keys(group.accountCodesSeen);
+      if (codes.length > 1) group.accountCode = "(conflicting: " + codes.sort().join(", ") + ")";
     });
 
     // Payout Frequency filtering: only merchants whose Master_List Payout Frequency matches the
@@ -2423,6 +2456,13 @@
     var matchedCount = total - unmatchedCount;
     var cardMatched = total - result.unmatchedCardTypeCount;
 
+    // The two ways a transaction fails to resolve need different actions, so they are counted apart:
+    // a missing terminal is a Terminal_Mapping gap, a missing merchant is a Master_List gap.
+    var noTerminal = 0, noMerchant = 0;
+    result.unmatchedMerchants.forEach(function(r){
+      if (r.unmatchedReason === "Terminal not in Terminal_Mapping") noTerminal++; else noMerchant++;
+    });
+
     var wrap = document.createElement("div");
     wrap.className = "dynamic";
     wrap.style.display = "flex";
@@ -2434,7 +2474,7 @@
     summary.innerHTML =
       statTile(total, "Transactions Processed", "") +
       statTile(matchedCount, "Merchant Matched (MID)", "ok") +
-      statTile(unmatchedCount, "Unmatched MID", unmatchedCount ? "warn" : "ok") +
+      statTile(unmatchedCount, "Unmatched", unmatchedCount ? "warn" : "ok") +
       statTile(cardMatched + " / " + total, "Card Type Matched", "");
     wrap.appendChild(summary);
 
@@ -2451,9 +2491,30 @@
     resultsCard.appendChild(head);
 
     if (unmatchedCount > 0){
+      var heldGross = round2(sumBy(result.unmatchedMerchants, function(r){ return toNumber(r.grossAmount); }));
+      // What exactly is missing, so the gap can be closed in the workbook rather than hunted for.
+      var missingTerminals = {}, missingMids = {};
+      result.unmatchedMerchants.forEach(function(r){
+        if (r.unmatchedReason === "Terminal not in Terminal_Mapping") missingTerminals[String(r.merchantId) + " / " + String(r.terminalId)] = true;
+        else missingMids[String(r.merchantId)] = true;
+      });
       var banner = document.createElement("div");
       banner.className = "banner warn";
-      banner.innerHTML = "⚠ " + unmatchedCount + " transaction" + (unmatchedCount === 1 ? "" : "s") + " reference a Merchant ID not found in the Master_List and are flagged below for review.";
+      var parts = ["<strong>" + unmatchedCount + " transaction" + (unmatchedCount === 1 ? " is" : "s are") +
+        " excluded from the payout report</strong> — " + fmtAmount(heldGross) + " gross held back. Nothing is guessed."];
+      if (noTerminal){
+        parts.push("<strong>" + noTerminal + "</strong> on <strong>" + Object.keys(missingTerminals).length +
+          "</strong> terminal(s) missing from <strong>Terminal_Mapping</strong>: " +
+          escapeHtml(Object.keys(missingTerminals).slice(0, 8).join("; ")) +
+          (Object.keys(missingTerminals).length > 8 ? " … and " + (Object.keys(missingTerminals).length - 8) + " more" : ""));
+      }
+      if (noMerchant){
+        parts.push("<strong>" + noMerchant + "</strong> on <strong>" + Object.keys(missingMids).length +
+          "</strong> MID(s) not in <strong>Master_List</strong> at all: " +
+          escapeHtml(Object.keys(missingMids).slice(0, 8).join(", ")) +
+          (Object.keys(missingMids).length > 8 ? " … and " + (Object.keys(missingMids).length - 8) + " more" : ""));
+      }
+      banner.innerHTML = parts.join("<br>");
       resultsCard.appendChild(banner);
     }
 
@@ -2546,7 +2607,9 @@
         tr.appendChild(td);
       });
       var statusTd = document.createElement("td");
-      statusTd.innerHTML = row.merchantMatched ? '<span class="chip ok">Matched</span>' : '<span class="chip bad">Unmatched MID</span>';
+      statusTd.innerHTML = row.merchantMatched
+        ? '<span class="chip ok">Matched</span>'
+        : '<span class="chip bad">' + escapeHtml(row.unmatchedReason || "Unmatched") + '</span>';
       tr.appendChild(statusTd);
       tbody.appendChild(tr);
     });
@@ -2597,7 +2660,7 @@
           out[col.label] = (col.key === "merchantId" && v !== undefined && v !== null) ? String(v) : v;
         }
       });
-      out["Match Status"] = row.merchantMatched ? "Matched" : "Unmatched MID";
+      out["Match Status"] = row.merchantMatched ? "Matched" : (row.unmatchedReason || "Unmatched");
       return out;
     });
   }
