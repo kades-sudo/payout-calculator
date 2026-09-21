@@ -659,6 +659,7 @@
     cardTypesRows: null,
     prefixRows: null,         // Prefix sheet — BIN membership list for Wallet Classification
     walletRulesRows: null,    // Wallet_Rules sheet — Card Type (On us/Off us) -> match / no-match label
+    txnFeeRows: null,         // Txn_Fee sheet — per-transaction fee tiers, keyed by Txn Fee ID
     frequency: null,
     view: "calculator",      // active section in the sidebar
     theme: "system",         // "system" | "light" | "dark"
@@ -682,7 +683,8 @@
     special_rate: ["specialrate", "specialrates"],
     card_types: ["cardtypes", "paymentgroups"],
     prefix: ["prefix", "prefixes", "prefixlist", "bin", "binlist", "napstab"],
-    wallet_rules: ["walletrules", "walletclassification", "walletclassificationrules", "classificationrules"]
+    wallet_rules: ["walletrules", "walletclassification", "walletclassificationrules", "classificationrules"],
+    txn_fee: ["txnfee", "txnfees", "transactionfee", "transactionfees", "clearedtxnfee", "ratepertrnx"]
   };
   var SHEET_LABELS = {
     master_list: "Master_List",
@@ -692,7 +694,8 @@
     special_rate: "Special_Rate",
     card_types: "Card_Types",
     prefix: "Prefix",
-    wallet_rules: "Wallet_Rules"
+    wallet_rules: "Wallet_Rules",
+    txn_fee: "Txn_Fee"
   };
   var REQUIRED_SHEETS = { master_list: true, card_type_classification: true };
 
@@ -749,6 +752,7 @@
     costId: ["costid"],
     belowAmountRule: ["belowamountrule"],
     ratePerTrnx: ["ratepertrnx", "ratepertxn"],
+    txnFeeId: ["txnfeeid", "transactionfeeid", "feeid"],
     gainForBankCharge: ["noqoodygainforbankcharge", "gainforbankcharge", "noqoodygainforbankcharges"],
     payoutProcessingFee: ["payoutprocessingfee"],
     status: ["status"]
@@ -1018,6 +1022,7 @@
         costId: resolver.costId ? row[resolver.costId] : "",
         belowAmountRule: toNumber(resolver.belowAmountRule ? row[resolver.belowAmountRule] : ""),
         ratePerTrnx: toNumber(resolver.ratePerTrnx ? row[resolver.ratePerTrnx] : ""),
+        txnFeeId: resolver.txnFeeId ? row[resolver.txnFeeId] : "",
         gainForBankCharge: toNumber(resolver.gainForBankCharge ? row[resolver.gainForBankCharge] : ""),
         payoutProcessingFee: toNumber(resolver.payoutProcessingFee ? row[resolver.payoutProcessingFee] : ""),
         status: resolver.status ? row[resolver.status] : ""
@@ -1035,6 +1040,28 @@
       var cid = costIdKey ? row[costIdKey] : "";
       if (String(cid === undefined || cid === null ? "" : cid).trim() === "") return;
       map.set(norm(cid), row);
+    });
+    return map;
+  }
+
+  // Txn_Fee holds the per-transaction fee tiers, keyed by Txn Fee ID exactly as Bank_Cost is keyed
+  // by Cost ID: many merchants share one row, so a contract change is edited in one place. The Scope
+  // cell says when the fee bites — "Below" only on Sales under the merchant's Below Amount Rule
+  // (what the legacy Rate Per Trnx column did), "All" on every Sale. A blank Scope means "All": a
+  // blank cell should read as the plain meaning of a contract, not as a special case.
+  var TXN_FEE_SCOPE_BELOW = "below";
+  var WALLET_TXNFEE_CANDIDATES = ["wallet", "walletfee", "wallettxnfee"];
+
+  function buildTxnFeeIndex(rows){
+    var map = new Map();
+    if (!rows || !rows.length) return map;
+    var headers = Object.keys(rows[0]);
+    var idKey = resolveSingle(headers, ["txnfeeid", "transactionfeeid", "feeid"]);
+    var scopeKey = resolveSingle(headers, ["scope", "appliesto"]);
+    rows.forEach(function(row){
+      var id = idKey ? row[idKey] : "";
+      if (String(id === undefined || id === null ? "" : id).trim() === "") return;
+      map.set(norm(id), { raw: row, scope: norm(scopeKey ? row[scopeKey] : "") });
     });
     return map;
   }
@@ -1095,6 +1122,7 @@
     var nameKey = resolveSingle(headers, ["cardtype", "paymentgroup"]);
     var mlColKey = resolveSingle(headers, ["masterlistratecolumn"]);
     var costColKey = resolveSingle(headers, ["costtablecolumn"]);
+    var feeColKey = resolveSingle(headers, ["txnfeecolumn", "transactionfeecolumn"]);
     var orderKey = resolveSingle(headers, ["order"]);
     var groups = rows.map(function(row, i){
       var name = nameKey ? String(row[nameKey] === undefined ? "" : row[nameKey]).trim() : "";
@@ -1102,6 +1130,7 @@
         name: name,
         masterListRateColumn: mlColKey ? row[mlColKey] : "",
         costTableColumn: costColKey ? row[costColKey] : "",
+        txnFeeColumn: feeColKey ? row[feeColKey] : "",
         order: orderKey && row[orderKey] !== "" ? toNumber(row[orderKey]) : i
       };
     }).filter(function(g){ return g.name; });
@@ -1321,7 +1350,28 @@
     return undefined;
   }
 
-  function computePaymentGroupCell(rows, masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled){
+  // The per-transaction fee for one payment group on one report line.
+  //
+  // A merchant's Txn Fee ID points at a Txn_Fee tier, which carries a fee per card type and a Scope.
+  // Wallet rows read the tier's general Wallet column, the same way they read one general wallet
+  // rate and one general wallet bank cost.
+  //
+  // When Txn Fee ID is blank the legacy merchant-level Rate Per Trnx column still applies, on the
+  // below-threshold line only, exactly as before. That fallback is deliberate: with 269 merchants,
+  // dropping the old column outright would turn every unfilled row's fee silently into zero.
+  // renderTxnFeeStatus reports how many merchants still depend on it, so it can be retired once
+  // that count reaches zero rather than living on as a second source of truth.
+  function resolveRatePerTxn(masterEntry, pg, isBelow, isWallet, txnFeeIndex){
+    if (!masterEntry) return 0;
+    var tier = txnFeeIndex ? txnFeeIndex.get(norm(masterEntry.txnFeeId)) : null;
+    if (!tier) return isBelow ? masterEntry.ratePerTrnx : 0;
+    if (tier.scope === TXN_FEE_SCOPE_BELOW && !isBelow) return 0;
+    return toNumber(isWallet
+      ? pickByCandidates(tier.raw, WALLET_TXNFEE_CANDIDATES)
+      : (pg.txnFeeColumn ? getByNormalizedKey(tier.raw, pg.txnFeeColumn) : ""));
+  }
+
+  function computePaymentGroupCell(rows, masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled, txnFeeIndex){
     var groupRows = rows.filter(function(r){
       if (!walletEnabled) return norm(r.cardType2) === norm(pg.name);
       var split = splitWalletLabel(r.walletClassification);
@@ -1353,7 +1403,7 @@
 
     var bankFee = round2(gross * bankRate);
     var noqoodyCharge = round2(gross * merchantRate);
-    var ratePerTxn = (isBelow && masterEntry) ? masterEntry.ratePerTrnx : 0;
+    var ratePerTxn = resolveRatePerTxn(masterEntry, pg, isBelow, isWallet, txnFeeIndex);
     var noqoodyChargePerTxn = round2(clearedTxn * ratePerTxn);
     var profit = round2(noqoodyCharge + noqoodyChargePerTxn - bankFee - refund);
     var internalTransfer = round2(gross - noqoodyCharge - noqoodyChargePerTxn - refund);
@@ -1365,12 +1415,12 @@
     };
   }
 
-  function buildMerchantLine(g, rows, opts, bankCostIndex, paymentGroups, manualInputs){
+  function buildMerchantLine(g, rows, opts, bankCostIndex, paymentGroups, manualInputs, txnFeeIndex){
     var isBelow = !!opts.isBelow, isWallet = !!opts.isWallet, isPrimary = !!opts.isPrimary;
     var threshold = opts.threshold, walletEnabled = !!opts.walletEnabled;
     var id = norm(g.mid) + "|" + norm(g.merchantKey) + (isWallet ? "|wallet" : "|card") + (isBelow ? "|below" : "|main");
     var groups = paymentGroups.map(function(pg){
-      return computePaymentGroupCell(rows, g.masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled);
+      return computePaymentGroupCell(rows, g.masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled, txnFeeIndex);
     });
     var totalProfit = round2(sumBy(groups, function(c){ return c.profit; }));
     var totalBankFee = round2(sumBy(groups, function(c){ return c.bankFee; }));
@@ -1431,7 +1481,7 @@
     };
   }
 
-  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency, walletConfigured){
+  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency, walletConfigured, txnFeeIndex){
     var merchantGroups = new Map();
     processed.forEach(function(row){
       if (!row.merchantMatched) return;
@@ -1468,6 +1518,11 @@
       if (codes.length > 1) group.accountCode = "(conflicting: " + codes.sort().join(", ") + ")";
     });
 
+    // Which pricing route each reported merchant takes, so the legacy Rate Per Trnx column can be
+    // retired once nothing depends on it. A merchant pointing at a Txn Fee ID that has no matching
+    // Txn_Fee row is a configuration error and is named, not silently dropped to the fallback.
+    var txnFeeUsage = { tier: 0, legacy: 0, none: 0, missingTier: {} };
+
     // Payout Frequency filtering: only merchants whose Master_List Payout Frequency matches the
     // selected frequency are reported. A blank/unconfigured Payout Frequency matches neither Daily
     // nor Weekly and is excluded from both, same as an unresolved merchant.
@@ -1495,6 +1550,14 @@
     // Splitting by row rather than by adding wallet columns keeps the report the same width — three
     // extra column sections would have pushed it past 130 columns of horizontal scrolling.
     sortedGroups.forEach(function(g){
+      var me = g.masterEntry;
+      var feeId = me && me.txnFeeId !== undefined && me.txnFeeId !== null ? String(me.txnFeeId).trim() : "";
+      if (feeId !== ""){
+        if (txnFeeIndex && txnFeeIndex.get(norm(feeId))) txnFeeUsage.tier++;
+        else txnFeeUsage.missingTier[feeId] = (txnFeeUsage.missingTier[feeId] || 0) + 1;
+      } else if (me && toNumber(me.ratePerTrnx) > 0) txnFeeUsage.legacy++;
+      else txnFeeUsage.none++;
+
       var threshold = g.masterEntry ? g.masterEntry.belowAmountRule : 0;
       var cardRows = [], walletRows = [];
       g.rows.forEach(function(r){
@@ -1517,7 +1580,7 @@
         return buildMerchantLine(g, spec.rows, {
           isBelow: spec.isBelow, isWallet: spec.isWallet, isPrimary: i === 0,
           threshold: threshold, walletEnabled: walletConfigured
-        }, bankCostIndex, paymentGroups, manualInputs);
+        }, bankCostIndex, paymentGroups, manualInputs, txnFeeIndex);
       });
 
       // Total Transfer sums every row of the merchant and sits on the first one.
@@ -1637,6 +1700,7 @@
       grandTotal: grandTotal,
       unresolvedCount: unresolvedCount,
       excludedByFrequencyCount: excludedByFrequencyCount,
+      txnFeeUsage: txnFeeUsage,
       walletConfigured: !!walletConfigured,
       walletSections: paymentGroups.map(function(pg, i){
         return merchantLines.some(function(l){ return l.isWallet && l.groups[i].txnCount > 0; });
@@ -2264,6 +2328,7 @@
     state.cardTypesRows = firstMatch.card_types ? XLSX.utils.sheet_to_json(firstMatch.card_types, { defval: "" }) : null;
     state.prefixRows = firstMatch.prefix ? XLSX.utils.sheet_to_json(firstMatch.prefix, { defval: "" }) : null;
     state.walletRulesRows = firstMatch.wallet_rules ? XLSX.utils.sheet_to_json(firstMatch.wallet_rules, { defval: "" }) : null;
+    state.txnFeeRows = firstMatch.txn_fee ? XLSX.utils.sheet_to_json(firstMatch.txn_fee, { defval: "" }) : null;
 
     renderSheetChecks();
     renderValidationPanel();
@@ -2766,8 +2831,9 @@
   function recomputeAndRenderPayoutReport(){
     var bankCostIndex = buildBankCostIndex(state.bankCostRows);
     var paymentGroups = buildPaymentGroups(state.cardTypesRows);
+    var txnFeeIndex = buildTxnFeeIndex(state.txnFeeRows);
     state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs,
-                                             state.frequency, !!(state.result && state.result.walletConfigured));
+                                             state.frequency, !!(state.result && state.result.walletConfigured), txnFeeIndex);
     renderPayoutReport(state.payoutReport);
     renderDataStrip();
     applyMerchantFilter();
@@ -2833,6 +2899,34 @@
       (report.unresolvedCount > 0 ? ("<br>" + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row and are excluded from this report.") : "") +
       (report.excludedByFrequencyCount > 0 ? ("<br>" + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency and are excluded from this report.") : "");
     body.appendChild(notice);
+
+    // Per-transaction pricing: which route each merchant took, and anything misconfigured. The
+    // legacy count is the retirement signal for the old Rate Per Trnx column.
+    var usage = report.txnFeeUsage;
+    if (usage){
+      var missingIds = Object.keys(usage.missingTier || {});
+      if (usage.tier || usage.legacy || missingIds.length){
+        var feeNotice = document.createElement("div");
+        feeNotice.className = missingIds.length ? "banner bad" : "banner sample";
+        feeNotice.style.margin = "0 20px 16px";
+        var n = function(k, one, many){ return k + " " + (k === 1 ? one : many); };
+        var bits = [];
+        if (missingIds.length){
+          bits.push("<strong>Txn Fee ID " + escapeHtml(missingIds.join(", ")) +
+            " has no matching Txn_Fee row.</strong> " +
+            n(missingIds.reduce(function(a, k){ return a + usage.missingTier[k]; }, 0), "merchant is", "merchants are") +
+            " pointing at it, so no per-transaction fee was applied to them. Nothing is guessed.");
+        }
+        if (usage.tier) bits.push(n(usage.tier, "merchant is", "merchants are") + " priced from the <strong>Txn_Fee</strong> sheet.");
+        if (usage.legacy){
+          bits.push(n(usage.legacy, "merchant still uses", "merchants still use") +
+            " the legacy <strong>Rate Per Trnx</strong> column (below-threshold only). Give them a <strong>Txn Fee ID</strong> to migrate; " +
+            "the old column can be removed once this reaches zero.");
+        }
+        feeNotice.innerHTML = bits.join("<br>");
+        body.appendChild(feeNotice);
+      }
+    }
 
     // The dashboard is rendered from this same computed report, into the Dashboard section — one
     // calculation, two places, so the cards can never disagree with the table below them.

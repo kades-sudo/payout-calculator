@@ -852,3 +852,78 @@ unchanged, no page errors.
 - 41 terminals (776 transactions, QAR 47,464.50) need Terminal_Mapping rows.
 - 5 MIDs (86 transactions, QAR 60,252.50) are not in Master_List at all — including the Weekly
   merchants not yet added.
+
+---
+
+## Per-transaction fees: the Txn_Fee tier sheet
+
+**Audit status: PENDING VERIFICATION.** Adds per-card-type per-transaction pricing
+(`1.90% + 0.50`, `1.35% + 1.00`, …), which the single merchant-level `Rate Per Trnx` column could
+not express.
+
+### Why a lookup sheet rather than columns on Master_List
+
+Per-card-type columns would mean 7 card types x 269 merchants = **1,883 cells**, growing by 269 with
+every new card type — which defeats the point of Card_Types being dynamic. Bank_Cost already solves
+this shape: 7 rows serve 75 merchants, each named by a real contract. `Txn_Fee` follows it exactly.
+
+### Schema
+
+**`Txn_Fee`** — keyed by `Txn Fee ID`, one row per pricing tier:
+
+| Txn Fee ID | Credit Card | Debit Card | Wallet | Himyan | AMEX | JCB | China UnionPay | Scope | Note |
+|---|---|---|---|---|---|---|---|---|---|
+
+- Amounts are **currency, formatted `0.00`** — deliberately not the `0.00%` Bank_Cost uses.
+- `Scope` = `All` (every cleared Sale) or `Below` (only Sales under the merchant's Below Amount
+  Rule, which is what the legacy column did). **Blank means `All`**: a blank cell should read as the
+  plain meaning of a contract, not as a special case.
+- Wallet rows read the general `Wallet` column, matching the one general wallet rate and wallet bank
+  cost.
+
+**`Master_List`** — one new column, `Txn Fee ID`. **`Card_Types`** — one new column,
+`Txn Fee Column`, parallel to `Cost Table Column`, so a new card type stays a data-only change.
+
+### The legacy column stays, with a retirement signal
+
+`Rate Per Trnx` still applies when `Txn Fee ID` is blank. With 269 merchants, dropping it outright
+would turn every unfilled row's fee silently into zero — the failure mode this codebase has twice
+been bitten by. The report now states how many merchants still depend on it, so it can be removed on
+evidence once that count reaches zero rather than living on as a second source of truth.
+
+A `Txn Fee ID` pointing at a row that does not exist is **named in a red banner**, not quietly
+dropped to the fallback.
+
+### Verification
+
+Migrating the three legacy merchants to tier 2 (`0.50` across the board, `Scope = Below`) reproduces
+their figures exactly. Every section carrying transactions is identical:
+
+```
+Credit Card          cleared 19   rate 0.50 -> 0.50   charge 9.50 -> 9.50
+Debit Card           cleared 15   rate 0.50 -> 0.50   charge 7.50 -> 7.50
+Credit Card Wallet   cleared  4   rate 0.50 -> 0.50   charge 2.00 -> 2.00
+```
+
+**One behaviour change**, in sections with no transactions: the legacy column blanket-applied its
+rate to *every* payment group, so AMEX/JCB/China UnionPay displayed `0.50`; tier 2 sets them to `0`
+and they now display `0.00`. No money moves today because those sections are empty, but a future
+AMEX transaction would be charged `0` rather than `0.50` — set the tier's AMEX cell if that is
+wrong.
+
+Tier 1 (`Scope = All`) resolves per card type and applies on the **main** line, not only below the
+threshold:
+
+```
+NEW BALANCE DOHA   Credit Card  17 x 0.50 = 8.50   Debit 6 x 1.00 = 6.00   Himyan 3 x 1.00 = 3.00
+                   wallets       1 x 0.50 = 0.50           5 x 0.50 = 2.50
+```
+
+Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, no page errors,
+and the control total still balances at 3,707 / 1,245,071.15.
+
+### Still open
+
+- No merchant is assigned `Txn Fee ID 1` yet — the new pricing has a tier but no holder.
+- AMEX / JCB / China UnionPay are `0` on both tiers; the stated contracts named only Credit, Debit,
+  Wallet and Himyan.
