@@ -1257,3 +1257,58 @@ File size 4.12 MB -> 7.63 MB for the extra sheets.
 
 Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, control total
 3,707 / 1,245,071.15.
+
+---
+
+## Reverted: Excel drill-down removed
+
+**Audit status: PENDING VERIFICATION.** Three attempts at an Excel-side drill-down were removed at
+the user's instruction, after establishing the requested behaviour is not expressible in `.xlsx`.
+
+### The question, answered
+
+> Clicking a merchant in the payout report should filter Process Raw Details to that merchant only.
+
+**Not achievable in a plain `.xlsx`.** Not a tooling limit — the file format has no mechanism for it:
+
+- A hyperlink does exactly two things: jump to a location, or open a URL. There is no "on click, run
+  something" anywhere in a spreadsheet file.
+- AutoFilter state is static XML — one stored state per sheet. It cannot vary by which cell was
+  clicked, because nothing records that a cell was clicked.
+- Defined names, data validation and conditional formatting do not respond to clicks either.
+
+The only mechanisms that change a sheet's filter on click are a **VBA macro** (`.xlsm`, Enable
+Content, blocked by most IT policy, dead in Excel Online and mobile) or an **Office Script /
+Add-in**, which lives outside the file.
+
+The per-sheet-per-merchant approach was the closest a plain workbook can get — it produced a
+filtered *view* by landing on a sheet containing nothing else — but it cost 41 extra sheets and
+grew the file from 4.12 MB to 7.63 MB. Rejected on both counts.
+
+### What was removed
+
+`buildMerchantDetailsSheet`, `buildMerchantSheets`, `safeSheetName`, the `Merchant Details` sheet,
+the per-merchant sheets, and every hyperlink on the report's Merchant cells.
+
+### What was kept
+
+- **The in-app drill-down** — double-click a merchant row in the web app. Unaffected, and was never
+  the thing in question.
+- **Bank Difference flagging** with its per-section cause.
+- **Process Raw Details: frozen header and AutoFilter.** Zero structural cost (4.12 MB -> 4.18 MB)
+  and it is how a merchant's transactions are isolated by hand — filter the Merchant or Merchant ID
+  column. Say so and it can go too.
+
+### Verification
+
+```
+sheets                        : DAILY PAYOUT | Process Raw Details
+hyperlinks left in the report : 0
+file size                     : 7.63 MB -> 4.18 MB  (original 4.12 MB)
+DAILY PAYOUT                  : <pane xSplit="3"/>            no filter
+Process Raw Details           : <pane ySplit="1"/>            autoFilter A1:V3708
+OOXML                         : 11 parts, all well-formed
+```
+
+Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, control total
+3,707 / 1,245,071.15.

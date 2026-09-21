@@ -2916,159 +2916,6 @@
     });
   }
 
-  var DETAILS_SHEET_NAME = "Merchant Details";
-
-  // The Excel drill-down. A FLAT sheet: one header row, every matched transaction beneath it,
-  // ordered by the merchant the payout report groups it under (MID + Merchant Key). The report's
-  // Merchant cell links to that merchant's first row.
-  //
-  // Flat rather than grouped-with-banners on purpose: Excel allows one AutoFilter per sheet and it
-  // must sit on a single header row, so banner rows between blocks would rule filtering out. This
-  // way the sheet does both — the link jumps you to the merchant, and the filter still works on
-  // every column afterwards.
-  //
-  // A real "double-click to Show Details" is an Excel application behaviour available only on a
-  // PivotTable or behind a VBA macro; a hand-built cross-tab can be neither, so the drill-down is a
-  // hyperlink, which needs no macro and works in Excel desktop, Mac, Online and mobile alike.
-  function buildMerchantDetailsSheet(report, processed){
-    var byMerchant = new Map();
-    processed.forEach(function(r){
-      if (!r.merchantMatched) return;
-      var key = norm(r.merchantId) + "|" + norm(r._merchantKey);
-      if (!byMerchant.has(key)) byMerchant.set(key, []);
-      byMerchant.get(key).push(r);
-    });
-
-    // Account Code leads: it is how the report is organised, so it is the first thing worth
-    // filtering on. The rest mirrors Process Raw Details exactly.
-    var headerLabels = ["Account Code"].concat(PRD_HEADER_LABELS);
-    var aoa = [headerLabels.slice()];
-    var anchors = {};
-
-    report.accountCodeGroups.forEach(function(group){
-      group.lines.forEach(function(line){
-        if (!line.isPrimary) return;
-        var key = norm(line.mid) + "|" + norm(line.merchantKey);
-        var rows = byMerchant.get(key);
-        if (!rows || !rows.length || anchors[key] !== undefined) return;
-        anchors[key] = aoa.length;               // this merchant's first data row
-        rows.forEach(function(r){
-          aoa.push([group.accountCode].concat(PRD_HEADER_LABELS.map(function(label){
-            if (label === "Match Status") return r.merchantMatched ? "Matched" : (r.unmatchedReason || "Unmatched");
-            var col = COLUMNS.filter(function(c){ return c.label === label; })[0];
-            if (!col) return "";
-            var v = r[col.key];
-            if (col.num) return (v === "" || v === undefined || v === null) ? "" : toNumber(v);
-            return (col.key === "merchantId" && v !== undefined && v !== null) ? String(v) : v;
-          })));
-        });
-      });
-    });
-
-    var sheet = XLSX.utils.aoa_to_sheet(aoa);
-    sheet["!cols"] = headerLabels.map(function(label){
-      return { wch: label === "Merchant" ? 34 : (label === "Location" ? 18 : Math.max(11, Math.min(22, label.length + 3))) };
-    });
-    // One header row, so the filter and the frozen pane both work.
-    sheet["!autofilter"] = { ref: sheet["!ref"] };
-
-    var range = XLSX.utils.decode_range(sheet["!ref"]);
-    headerLabels.forEach(function(label, c){
-      var addr = XLSX.utils.encode_cell({ r: 0, c: c });
-      if (sheet[addr]) sheet[addr].s = { font: { bold: true, color: { rgb: "FFFFFFFF" } },
-                                         fill: { fgColor: { rgb: "FF0F2540" } } };
-      if (PRD_NUMERIC_LABELS.indexOf(label) < 0) return;
-      for (var r = 1; r <= range.e.r; r++){
-        var cell = sheet[XLSX.utils.encode_cell({ r: r, c: c })];
-        if (cell && cell.t === "n") cell.z = "#,##0.00";
-      }
-    });
-
-    return { sheet: sheet, anchors: anchors };
-  }
-
-  // Excel sheet names: 31 characters, no : \ / ? * [ ], and unique within the workbook.
-  function safeSheetName(base, taken){
-    var name = String(base === undefined || base === null ? "" : base)
-      .replace(/[:\\\/?*\[\]]/g, " ").replace(/\s+/g, " ").trim().slice(0, 31) || "Merchant";
-    if (!taken[norm(name)]){ taken[norm(name)] = true; return name; }
-    for (var i = 2; i < 1000; i++){
-      var suffix = " (" + i + ")";
-      var candidate = name.slice(0, 31 - suffix.length) + suffix;
-      if (!taken[norm(candidate)]){ taken[norm(candidate)] = true; return candidate; }
-    }
-    return name;
-  }
-
-  // One sheet per merchant, holding only that merchant's transactions — the same thing Excel's
-  // PivotTable "Show Details" produces, prepared up front. A hyperlink can navigate but cannot
-  // change a filter's state, so landing on a sheet that already contains nothing else is the only
-  // way to get a filtered view from a click without a macro.
-  function buildMerchantSheets(report, processed, reportSheetName){
-    var byMerchant = new Map();
-    processed.forEach(function(r){
-      if (!r.merchantMatched) return;
-      var key = norm(r.merchantId) + "|" + norm(r._merchantKey);
-      if (!byMerchant.has(key)) byMerchant.set(key, []);
-      byMerchant.get(key).push(r);
-    });
-
-    var taken = {}, out = [];
-    taken[norm(reportSheetName)] = true;
-    taken[norm(DETAILS_SHEET_NAME)] = true;
-    taken[norm("Process Raw Details")] = true;
-
-    report.accountCodeGroups.forEach(function(group){
-      group.lines.forEach(function(line){
-        if (!line.isPrimary) return;
-        var key = norm(line.mid) + "|" + norm(line.merchantKey);
-        var rows = byMerchant.get(key);
-        if (!rows || !rows.length) return;
-        byMerchant.delete(key);                      // one sheet per merchant, not per report line
-
-        var title = line.merchantName + "  —  MID " + line.mid +
-                    (line.merchantKey ? "  ·  Merchant Key " + line.merchantKey : "") +
-                    "  ·  Account Code " + group.accountCode +
-                    "  ·  " + rows.length + " transaction" + (rows.length === 1 ? "" : "s");
-        var aoa = [[title], PRD_HEADER_LABELS.slice()];
-        rows.forEach(function(r){
-          aoa.push(PRD_HEADER_LABELS.map(function(label){
-            if (label === "Match Status") return r.merchantMatched ? "Matched" : (r.unmatchedReason || "Unmatched");
-            var col = COLUMNS.filter(function(c){ return c.label === label; })[0];
-            if (!col) return "";
-            var v = r[col.key];
-            if (col.num) return (v === "" || v === undefined || v === null) ? "" : toNumber(v);
-            return (col.key === "merchantId" && v !== undefined && v !== null) ? String(v) : v;
-          }));
-        });
-
-        var sheet = XLSX.utils.aoa_to_sheet(aoa);
-        var range = XLSX.utils.decode_range(sheet["!ref"]);
-        sheet["!cols"] = PRD_HEADER_LABELS.map(function(label){
-          return { wch: label === "Merchant" ? 34 : (label === "Location" ? 18 : Math.max(11, Math.min(22, label.length + 3))) };
-        });
-        sheet["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: PRD_HEADER_LABELS.length - 1 } }];
-        // The filter sits on row 2, the header, so it can still be used to slice within the merchant.
-        sheet["!autofilter"] = { ref: "A2:" + XLSX.utils.encode_cell({ r: range.e.r, c: range.e.c }) };
-
-        sheet["A1"].s = { font: { bold: true, color: { rgb: "FFFFFFFF" } }, fill: { fgColor: { rgb: "FF0F2540" } } };
-        sheet["A1"].l = { Target: "#'" + reportSheetName + "'!A1", Tooltip: "Back to the payout report" };
-        PRD_HEADER_LABELS.forEach(function(label, c){
-          var addr = XLSX.utils.encode_cell({ r: 1, c: c });
-          if (sheet[addr]) sheet[addr].s = { font: { bold: true }, fill: { fgColor: { rgb: "FFF2F2F2" } } };
-          if (PRD_NUMERIC_LABELS.indexOf(label) < 0) return;
-          for (var r = 2; r <= range.e.r; r++){
-            var cell = sheet[XLSX.utils.encode_cell({ r: r, c: c })];
-            if (cell && cell.t === "n") cell.z = "#,##0.00";
-          }
-        });
-
-        out.push({ key: key, name: safeSheetName(line.merchantName, taken), sheet: sheet });
-      });
-    });
-    return out;
-  }
-
   function buildProcessRawDetailsSheet(processed){
     var sheet = XLSX.utils.json_to_sheet(buildProcessRawDetailsExportRows(processed), { header: PRD_HEADER_LABELS });
     if (!sheet["!ref"]) return sheet;
@@ -3679,7 +3526,6 @@
 
     var groupHeaderRowIdxs = []; // the CARD TYPE / FINAL RECONCILIATION / TRANSFER banner rows
     var labelRowIdxs = [];       // the "Account Code N" section label rows
-    var merchantLinkRows = [];   // {rowIdx, key} -> Merchant cells that link into Merchant Details
     var subtotalRowIdxs = [];
 
     report.accountCodeGroups.forEach(function(group){
@@ -3708,9 +3554,6 @@
       group.lines.forEach(function(line){
         var idx = pushRow(lineToRow([line.isPrimary ? line.no : "", line.isPrimary ? line.mid : "", line.label], line.groups, line), 1);
         sectionDataRows.push(idx);
-        // Only the merchant's first row carries the link — the continuation rows are the same
-        // merchant, and repeating the link would just clutter the block.
-        if (line.isPrimary) merchantLinkRows.push({ rowIdx: idx, key: norm(line.mid) + "|" + norm(line.merchantKey) });
         if (!line.isPrimary && mainRowSpans.length) mainRowSpans[mainRowSpans.length - 1].lastRowIdx = idx;
         else mainRowSpans.push({ mainRowIdx: idx, lastRowIdx: idx });
       });
@@ -3910,33 +3753,9 @@
 
     var prdSheet = buildProcessRawDetailsSheet(state.result.processed);
 
-    var details = buildMerchantDetailsSheet(report, state.result.processed);
-    var merchantSheets = buildMerchantSheets(report, state.result.processed, sheetName);
-    var sheetNameByKey = {};
-    merchantSheets.forEach(function(m){ sheetNameByKey[m.key] = m.name; });
-
-    // Drill-down: the Merchant cell opens that merchant's own sheet, which holds nothing but its
-    // transactions. A hyperlink can navigate but cannot set a filter, so a dedicated sheet is what
-    // makes a click produce a filtered view without a macro.
-    merchantLinkRows.forEach(function(link){
-      var target = sheetNameByKey[link.key];
-      if (!target) return;
-      var addr = XLSX.utils.encode_cell({ r: link.rowIdx, c: 2 });
-      var cell = reportSheet[addr];
-      if (!cell) return;
-      // The link carries no styling: the merchant name keeps the report's own formatting rather
-      // than turning blue and underlined. The tooltip on hover is what advertises it.
-      cell.l = {
-        Target: "#'" + target + "'!A1",
-        Tooltip: "Open this merchant's transactions"
-      };
-    });
-
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, reportSheet, sheetName);
-    XLSX.utils.book_append_sheet(wb, details.sheet, DETAILS_SHEET_NAME);
     XLSX.utils.book_append_sheet(wb, prdSheet, "Process Raw Details");
-    merchantSheets.forEach(function(m){ XLSX.utils.book_append_sheet(wb, m.sheet, m.name); });
     var arrayBuf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
     var reportSheetXmlPath = "xl/worksheets/sheet" + (wb.SheetNames.indexOf(sheetName) + 1) + ".xml";
 
@@ -3946,16 +3765,10 @@
 
     // Freezes No./MID/Merchant (the first 3 columns) — no row freeze, matching a real Daily Payout
     // export's own frozen-pane configuration.
-    // Both detail sheets get their header row frozen — 1,600+ rows of transactions are unreadable
-    // once the header scrolls away.
-    var freezeRowPaths = [DETAILS_SHEET_NAME, "Process Raw Details"].map(function(name){
-      var i = wb.SheetNames.indexOf(name);
-      return i === -1 ? null : { path: "xl/worksheets/sheet" + (i + 1) + ".xml", rows: 1 };
-    }).filter(Boolean).concat(merchantSheets.map(function(m){
-      var i = wb.SheetNames.indexOf(m.name);
-      // Title in row 1, header in row 2, so two rows stay put.
-      return i === -1 ? null : { path: "xl/worksheets/sheet" + (i + 1) + ".xml", rows: 2 };
-    }).filter(Boolean));
+    // Process Raw Details keeps a frozen header and an AutoFilter: 3,700 rows are unreadable once
+    // the header scrolls away, and the filter is how a merchant's transactions are isolated by hand.
+    var prdIdx = wb.SheetNames.indexOf("Process Raw Details");
+    var freezeRowPaths = prdIdx === -1 ? [] : [{ path: "xl/worksheets/sheet" + (prdIdx + 1) + ".xml", rows: 1 }];
 
     patchWorksheetForExcel(arrayBuf, reportSheetXmlPath, 3, freezeRowPaths).then(function(blob){
       if (!downloadsApi) {
