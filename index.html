@@ -2918,14 +2918,18 @@
 
   var DETAILS_SHEET_NAME = "Merchant Details";
 
-  // The Excel drill-down. Every matched transaction, grouped by the merchant the payout report
-  // groups it under (MID + Merchant Key), each block opened by a banner row. The report's Merchant
-  // cell links to that banner, so one click lands on the transactions behind the figure.
+  // The Excel drill-down. A FLAT sheet: one header row, every matched transaction beneath it,
+  // ordered by the merchant the payout report groups it under (MID + Merchant Key). The report's
+  // Merchant cell links to that merchant's first row.
   //
-  // A real "double-click to Show Details" is an Excel application behaviour: it exists only on a
-  // PivotTable or behind a VBA macro. The payout report is a custom cross-tab and cannot be either,
-  // so the drill-down is a hyperlink — which needs no macro and works in Excel desktop, Mac, Online
-  // and mobile alike.
+  // Flat rather than grouped-with-banners on purpose: Excel allows one AutoFilter per sheet and it
+  // must sit on a single header row, so banner rows between blocks would rule filtering out. This
+  // way the sheet does both — the link jumps you to the merchant, and the filter still works on
+  // every column afterwards.
+  //
+  // A real "double-click to Show Details" is an Excel application behaviour available only on a
+  // PivotTable or behind a VBA macro; a hand-built cross-tab can be neither, so the drill-down is a
+  // hyperlink, which needs no macro and works in Excel desktop, Mac, Online and mobile alike.
   function buildMerchantDetailsSheet(report, processed){
     var byMerchant = new Map();
     processed.forEach(function(r){
@@ -2935,65 +2939,48 @@
       byMerchant.get(key).push(r);
     });
 
-    var headerLabels = PRD_HEADER_LABELS;
-    var aoa = [], merges = [], bannerRows = [], anchors = {};
+    // Account Code leads: it is how the report is organised, so it is the first thing worth
+    // filtering on. The rest mirrors Process Raw Details exactly.
+    var headerLabels = ["Account Code"].concat(PRD_HEADER_LABELS);
+    var aoa = [headerLabels.slice()];
+    var anchors = {};
 
-    // Merchant blocks follow the report's own order, so the sheet reads in the same sequence.
     report.accountCodeGroups.forEach(function(group){
       group.lines.forEach(function(line){
         if (!line.isPrimary) return;
         var key = norm(line.mid) + "|" + norm(line.merchantKey);
-        var rows = byMerchant.get(key) || [];
-        if (!rows.length) return;
-
-        if (aoa.length) aoa.push([]);                     // one blank row between merchants
-        var bannerIdx = aoa.length;
-        aoa.push([line.merchantName + "  —  MID " + line.mid +
-                  (line.merchantKey ? "  ·  Merchant Key " + line.merchantKey : "") +
-                  "  ·  Account Code " + group.accountCode +
-                  "  ·  " + rows.length + " transaction" + (rows.length === 1 ? "" : "s")]);
-        merges.push({ s: { r: bannerIdx, c: 0 }, e: { r: bannerIdx, c: headerLabels.length - 1 } });
-        bannerRows.push(bannerIdx);
-        anchors[key] = bannerIdx;
-
-        aoa.push(headerLabels.slice());
+        var rows = byMerchant.get(key);
+        if (!rows || !rows.length || anchors[key] !== undefined) return;
+        anchors[key] = aoa.length;               // this merchant's first data row
         rows.forEach(function(r){
-          aoa.push(headerLabels.map(function(label){
+          aoa.push([group.accountCode].concat(PRD_HEADER_LABELS.map(function(label){
             if (label === "Match Status") return r.merchantMatched ? "Matched" : (r.unmatchedReason || "Unmatched");
             var col = COLUMNS.filter(function(c){ return c.label === label; })[0];
             if (!col) return "";
             var v = r[col.key];
             if (col.num) return (v === "" || v === undefined || v === null) ? "" : toNumber(v);
             return (col.key === "merchantId" && v !== undefined && v !== null) ? String(v) : v;
-          }));
+          })));
         });
       });
     });
 
-    if (!aoa.length) aoa.push(["No matched transactions in this batch."]);
     var sheet = XLSX.utils.aoa_to_sheet(aoa);
-    if (merges.length) sheet["!merges"] = merges;
     sheet["!cols"] = headerLabels.map(function(label){
       return { wch: label === "Merchant" ? 34 : (label === "Location" ? 18 : Math.max(11, Math.min(22, label.length + 3))) };
     });
+    // One header row, so the filter and the frozen pane both work.
+    sheet["!autofilter"] = { ref: sheet["!ref"] };
 
-    // Amount columns as real numbers, banner and header rows bold.
     var range = XLSX.utils.decode_range(sheet["!ref"]);
     headerLabels.forEach(function(label, c){
-      if (PRD_NUMERIC_LABELS.indexOf(label) < 0) return;
-      for (var r = range.s.r; r <= range.e.r; r++){
-        var cell = sheet[XLSX.utils.encode_cell({ r: r, c: c })];
-        if (cell && cell.t === "n") cell.z = "#,##0.00";
-      }
-    });
-    bannerRows.forEach(function(r){
-      var addr = XLSX.utils.encode_cell({ r: r, c: 0 });
+      var addr = XLSX.utils.encode_cell({ r: 0, c: c });
       if (sheet[addr]) sheet[addr].s = { font: { bold: true, color: { rgb: "FFFFFFFF" } },
                                          fill: { fgColor: { rgb: "FF0F2540" } } };
-      var hdr = r + 1;
-      for (var c = 0; c < headerLabels.length; c++){
-        var h = sheet[XLSX.utils.encode_cell({ r: hdr, c: c })];
-        if (h) h.s = { font: { bold: true }, fill: { fgColor: { rgb: "FFF2F2F2" } } };
+      if (PRD_NUMERIC_LABELS.indexOf(label) < 0) return;
+      for (var r = 1; r <= range.e.r; r++){
+        var cell = sheet[XLSX.utils.encode_cell({ r: r, c: c })];
+        if (cell && cell.t === "n") cell.z = "#,##0.00";
       }
     });
 
@@ -3008,7 +2995,6 @@
     // the flat, sliceable view. Merchant Details is the grouped one, where per-merchant header rows
     // rule an AutoFilter out.
     sheet["!autofilter"] = { ref: sheet["!ref"] };
-    sheet["!freeze"] = { xSplit: 0, ySplit: 1, topLeftCell: "A2", activePane: "bottomLeft", state: "frozen" };
     PRD_HEADER_LABELS.forEach(function(label, c){
       if (PRD_NUMERIC_LABELS.indexOf(label) < 0) return;
       for (var r = range.s.r + 1; r <= range.e.r; r++){
@@ -3501,9 +3487,26 @@
   // (only `outlineLevel` is), and writes `hidden="true"` where Excel's own writer uses `hidden="1"`.
   // Falls back to the unpatched file if JSZip is unavailable or anything throws, so a patch problem
   // can never block the download itself.
-  function patchWorksheetForExcel(arrayBuf, sheetXmlPath, xSplit){
+  // Freezing the top row on a sheet: this library writes no pane element, so the sheetView is
+  // rewritten directly. sheetViews must stay ahead of cols/sheetData, so it is replaced in place
+  // when present and inserted after <dimension> when it is not.
+  function freezeTopRowXml(xml){
+    var view =
+      '<sheetViews><sheetView workbookViewId="0">' +
+      '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' +
+      '<selection pane="bottomLeft"/></sheetView></sheetViews>';
+    if (/<sheetViews>[\s\S]*?<\/sheetViews>/.test(xml)) return xml.replace(/<sheetViews>[\s\S]*?<\/sheetViews>/, view);
+    if (/<sheetViews\s*\/>/.test(xml)) return xml.replace(/<sheetViews\s*\/>/, view);
+    return xml.replace(/(<dimension[^>]*\/>)/, "$1" + view);
+  }
+
+  function patchWorksheetForExcel(arrayBuf, sheetXmlPath, xSplit, freezeRowSheetPaths){
     if (typeof JSZip === "undefined") return Promise.resolve(new Blob([arrayBuf], { type: XLSX_MIME }));
     return JSZip.loadAsync(arrayBuf).then(function(zip){
+      var extras = (freezeRowSheetPaths || []).filter(function(path){ return zip.file(path); });
+      return Promise.all(extras.map(function(path){
+        return zip.file(path).async("string").then(function(x){ zip.file(path, freezeTopRowXml(x)); });
+      })).then(function(){
       return zip.file(sheetXmlPath).async("string").then(function(xml){
         var topLeftCell = XLSX.utils.encode_col(xSplit) + "1";
         var head =
@@ -3526,6 +3529,7 @@
             : wbXml.replace("</workbook>", calc + "</workbook>"));
           return zip.generateAsync({ type: "blob", mimeType: XLSX_MIME });
         });
+      });
       });
     }).catch(function(){
       return new Blob([arrayBuf], { type: XLSX_MIME });
@@ -3831,13 +3835,12 @@
       var addr = XLSX.utils.encode_cell({ r: link.rowIdx, c: 2 });
       var cell = reportSheet[addr];
       if (!cell) return;
+      // The link carries no styling: the merchant name keeps the report's own formatting rather
+      // than turning blue and underlined. The tooltip on hover is what advertises it.
       cell.l = {
         Target: "#'" + DETAILS_SHEET_NAME + "'!A" + (anchorRow + 1),
         Tooltip: "Show this merchant's transactions"
       };
-      // Look like a link, so it is obvious the cell is clickable.
-      cell.s = cell.s || {};
-      cell.s.font = { color: { rgb: "FF0563C1" }, underline: true };
     });
 
     var wb = XLSX.utils.book_new();
@@ -3853,7 +3856,14 @@
 
     // Freezes No./MID/Merchant (the first 3 columns) — no row freeze, matching a real Daily Payout
     // export's own frozen-pane configuration.
-    patchWorksheetForExcel(arrayBuf, reportSheetXmlPath, 3).then(function(blob){
+    // Both detail sheets get their header row frozen — 1,600+ rows of transactions are unreadable
+    // once the header scrolls away.
+    var freezeRowPaths = [DETAILS_SHEET_NAME, "Process Raw Details"].map(function(name){
+      var i = wb.SheetNames.indexOf(name);
+      return i === -1 ? null : "xl/worksheets/sheet" + (i + 1) + ".xml";
+    }).filter(Boolean);
+
+    patchWorksheetForExcel(arrayBuf, reportSheetXmlPath, 3, freezeRowPaths).then(function(blob){
       if (!downloadsApi) {
         alert("Downloads aren't available in this preview. Filename would be: " + filename);
         return;

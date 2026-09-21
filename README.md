@@ -1138,3 +1138,60 @@ is schema-correct (`sheetData -> mergeCells -> hyperlinks -> ignoredErrors`); in
 
 Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, control total
 3,707 / 1,245,071.15, in-app drill-down still returns 33 rows for the same merchant.
+
+---
+
+## Merchant Details: flat layout with a working AutoFilter, unstyled links
+
+**Audit status: PENDING VERIFICATION.** Revises the previous section.
+
+### Correcting the previous entry
+
+That entry said Merchant Details "cannot carry an AutoFilter." That was misleading. Excel allows one
+AutoFilter per sheet and it must sit on a single header row — so the limitation was in the
+**banner-grouped layout chosen**, not in Excel. Rebuilt flat, the sheet does both.
+
+### What changed
+
+`buildMerchantDetailsSheet` now emits **one header row and nothing but data beneath it**, ordered by
+the merchant the report groups it under (MID + Merchant Key), in the report's own order. Per-merchant
+banner rows are gone. The sheet carries an AutoFilter across its full range and a frozen header row.
+
+`Account Code` leads the columns — it is how the report is organised, so it is the first thing worth
+filtering on. The remaining columns mirror Process Raw Details exactly.
+
+The report's Merchant cell links to that merchant's **first data row** instead of a banner.
+
+### Links no longer look like links
+
+The hyperlink carries no styling: the merchant name keeps the report's own formatting rather than
+turning blue and underlined. The hover tooltip ("Show this merchant's transactions") is what
+advertises it. The link itself is unaffected — styling and behaviour are independent in OOXML.
+
+### Frozen header rows needed raw XML
+
+`ws["!freeze"]` is inert in this library — it was written and silently dropped, which the export
+check caught. `patchWorksheetForExcel` now takes a list of sheet paths whose top row to freeze and
+rewrites their `sheetView` directly, alongside the column freeze it already applied to the report.
+`sheetViews` is replaced in place so it stays ahead of `cols`/`sheetData`.
+
+### Verification
+
+```
+sheet1  DAILY PAYOUT          pane xSplit="3"  (columns)      autoFilter: none
+sheet2  Merchant Details      pane ySplit="1"  (header row)    autoFilter: A1:W1621
+sheet3  Process Raw Details   pane ySplit="1"  (header row)    autoFilter: A1:V3708
+```
+
+Element order schema-correct on all three (`sheetViews` before `cols`/`sheetData`; `autoFilter`
+after `sheetData`), all 12 parts well-formed.
+
+```
+hyperlinks                          : 41
+styled blue/underline               : 0
+links landing on the wrong merchant : 0
+flat sheet                          : 1,620 data rows, 41 distinct merchants, 0 banner rows
+```
+
+Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, control total
+3,707 / 1,245,071.15.
