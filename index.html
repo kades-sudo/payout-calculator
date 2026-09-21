@@ -818,7 +818,7 @@
 
   function fmtAmount(v){
     if (v === undefined || v === null || v === "") return "";
-    var n = Number(v);
+    var n = Number(String(v).trim().replace(/,/g, ""));
     if (isNaN(n)) return String(v);
     return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
@@ -829,9 +829,13 @@
     });
   }
 
+  // OMS raw exports store amounts as TEXT, and Excel writes a thousands separator into that text, so
+  // any transaction of 1,000 or more arrives as "2,500.00". Number() returns NaN for those, which
+  // would silently count the largest transactions as zero — strip the separators before parsing.
   function toNumber(v){
     if (v === "" || v === undefined || v === null) return 0;
-    var n = Number(v);
+    if (typeof v === "number") return isNaN(v) ? 0 : v;
+    var n = Number(String(v).trim().replace(/,/g, ""));
     return isNaN(n) ? 0 : n;
   }
 
@@ -2575,23 +2579,45 @@
     return best || new Date().toISOString().slice(0, 10);
   }
 
-  // Merchant ID must stay text on export: a numeric-typed value (common in real OMS exports) would
-  // otherwise reach Excel as a bare number and a large MID would render in scientific notation.
+  // Amount columns are written as real numbers so Excel can SUM them: the OMS source stores them as
+  // text with thousand separators, which Excel treats as labels and sums to 0.
+  // Identifier columns (Merchant ID, Terminal ID, Reference Number) deliberately stay text — a
+  // numeric-typed MID would reach Excel as a bare number and render in scientific notation.
+  var PRD_HEADER_LABELS = COLUMNS.map(function(c){ return c.label; }).concat(["Match Status"]);
+  var PRD_NUMERIC_LABELS = COLUMNS.filter(function(c){ return c.num; }).map(function(c){ return c.label; });
+
   function buildProcessRawDetailsExportRows(processed){
     return processed.map(function(row){
       var out = {};
       COLUMNS.forEach(function(col){
         var v = row[col.key];
-        out[col.label] = (col.key === "merchantId" && v !== undefined && v !== null) ? String(v) : v;
+        if (col.num){
+          out[col.label] = (v === "" || v === undefined || v === null) ? "" : toNumber(v);
+        } else {
+          out[col.label] = (col.key === "merchantId" && v !== undefined && v !== null) ? String(v) : v;
+        }
       });
       out["Match Status"] = row.merchantMatched ? "Matched" : "Unmatched MID";
       return out;
     });
   }
 
+  function buildProcessRawDetailsSheet(processed){
+    var sheet = XLSX.utils.json_to_sheet(buildProcessRawDetailsExportRows(processed), { header: PRD_HEADER_LABELS });
+    if (!sheet["!ref"]) return sheet;
+    var range = XLSX.utils.decode_range(sheet["!ref"]);
+    PRD_HEADER_LABELS.forEach(function(label, c){
+      if (PRD_NUMERIC_LABELS.indexOf(label) < 0) return;
+      for (var r = range.s.r + 1; r <= range.e.r; r++){
+        var cell = sheet[XLSX.utils.encode_cell({ r: r, c: c })];
+        if (cell && cell.t === "n") cell.z = "#,##0.00";
+      }
+    });
+    return sheet;
+  }
+
   function downloadProcessRawDetails(processed){
-    var exportRows = buildProcessRawDetailsExportRows(processed);
-    var ws = XLSX.utils.json_to_sheet(exportRows, { header: COLUMNS.map(function(c){ return c.label; }).concat(["Match Status"]) });
+    var ws = buildProcessRawDetailsSheet(processed);
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Process Raw Details");
     var arrayBuf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
@@ -3273,8 +3299,7 @@
       }
     });
 
-    var prdExportRows = buildProcessRawDetailsExportRows(state.result.processed);
-    var prdSheet = XLSX.utils.json_to_sheet(prdExportRows, { header: COLUMNS.map(function(c){ return c.label; }).concat(["Match Status"]) });
+    var prdSheet = buildProcessRawDetailsSheet(state.result.processed);
 
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, reportSheet, sheetName);

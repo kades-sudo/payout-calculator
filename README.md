@@ -700,3 +700,71 @@ rows — the MID is carried on every row in a data attribute for that reason.
   file, or typed per merchant)? What identifies a merchant in the portal — MID alone cannot separate
   shared-MID merchants? Compare against `Total Transfer`? What match tolerance?
 - Production verification of the dashboard totals and the duplicate report against a real payout run.
+
+---
+
+## Fix: comma-formatted amounts were silently parsed as zero
+
+**Audit status: PENDING VERIFICATION.** The root cause of the "report doesn't match the raw sheet"
+mismatch, found while verifying an exported `Payout_Report_Daily` against its own
+`Process Raw Details` sheet.
+
+### The defect
+
+OMS raw exports store `Gross Amount`, `Commission` and `Net Amount` as **text**, and Excel writes a
+thousands separator into that text — so any transaction of 1,000 or more arrives as `"2,500.00"`.
+`toNumber()` parsed every amount with `Number(v)`, which returns `NaN` for a string containing a
+comma, and the `isNaN` guard then turned it into **0**.
+
+Transactions under 1,000 parsed correctly; every transaction at or above 1,000 was counted as zero.
+Measured on `OMS_NapsTab` (3,707 rows):
+
+| column | cells with a comma | value silently zeroed | of column total |
+|---|---|---|---|
+| Gross Amount | 138 | 1,067,735.70 | 1,245,071.15 |
+| Net Amount | 137 | 1,054,778.25 | 1,231,035.16 |
+
+86% of the gross was being discarded. The on-screen Process Raw Details table looked correct
+throughout, because `fmtAmount()` fell back to `String(v)` and re-displayed the original text.
+
+### The fix
+
+- `toNumber()` strips thousands separators before parsing, and returns numeric input unchanged.
+- `fmtAmount()` does the same, so display and calculation agree.
+- `buildProcessRawDetailsExportRows()` writes the three amount columns as real numbers with a
+  `#,##0.00` format, via a shared `buildProcessRawDetailsSheet()` used by both export paths.
+  Excel's `SUM` previously returned 0 on that sheet.
+- `Merchant ID`, `Terminal ID` and `Reference Number` **deliberately stay text** — they are
+  identifiers, and a numeric-typed MID renders in scientific notation.
+
+Safety checked before applying: after stripping commas, zero values in the OMS file are unparseable;
+negatives use a leading minus (23 rows, no parenthesised accounting negatives, no currency symbols);
+and the Masterlist contains no comma-bearing numeric strings, so rates and thresholds are unaffected.
+
+### Verification
+
+Report totals, before vs after, same inputs:
+
+| | before | after |
+|---|---|---|
+| Credit Card section gross | 27,876.33 | 302,370.43 |
+| Grand total gross | 66,359.86 | 469,630.10 |
+| Total profit | -4,467.75 | -165.81 |
+
+The exported `Process Raw Details` now types all 3,707 amount cells as numbers: `Gross Amount` sums
+to **1,245,071.15**, matching an independent parse of the source file. Both export paths (standalone
+and bundled-with-report) were captured and checked.
+
+Cross-footed against the raw sheet for `NEW BALANCE DOHA` / MID `777100432320320` — the case that
+surfaced the bug: Credit Card **17 Sale rows, 9,040.50** and Credit Card Wallet **1 Sale row,
+337.00**, both exactly as rendered, counts included.
+
+Regression: 107/107 rate pairs match the Masterlist, 1,726/1,726 export formulas evaluate to their
+cached values, row shape unchanged at 55 rows across 30 merchants.
+
+### Correction to earlier figures in this document
+
+Every figure previously quoted from a `Process Raw Details` sheet was produced by verification
+scripts that used the same `Number()` parse, so they are **understated**. This includes the
+"758 unmatched transactions / QAR 79,007" finding and the shared-MID per-merchant breakdown; both
+need recomputing before they are relied on.
