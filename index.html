@@ -1337,7 +1337,10 @@
   // Wallet rows are priced from a single pair of columns shared by every wallet type, rather than
   // per-scheme ones: Master_List "Wallet MerchantRate" and Bank_Cost "Wallet".
   var WALLET_RATE_CANDIDATES = ["walletmerchantrate", "walletrate", "walletmerchrate"];
-  var WALLET_COST_CANDIDATES = ["wallet", "walletcost", "walletbankcost"];
+  // Retired. Bank_Cost no longer carries a general Wallet column: a wallet row takes the bank rate
+  // of the card scheme underneath it. Kept only so a workbook that still has the column can be
+  // flagged, never to price anything.
+  var DISUSED_WALLET_COST_CANDIDATES = ["wallet", "walletcost", "walletbankcost"];
 
   function pickByCandidates(obj, candidates){
     if (!obj) return undefined;
@@ -1391,15 +1394,20 @@
     }));
 
     var bankCostRow = masterEntry ? bankCostIndex.get(norm(masterEntry.costId)) : null;
-    var merchantRate, bankRate;
-    if (isWallet){
-      // Every wallet type shares one merchant rate and one bank cost, whatever card is underneath.
-      merchantRate = toRate(pickByCandidates(masterEntry ? masterEntry.raw : null, WALLET_RATE_CANDIDATES));
-      bankRate = toRate(pickByCandidates(bankCostRow, WALLET_COST_CANDIDATES));
-    } else {
-      merchantRate = masterEntry && pg.masterListRateColumn ? toRate(getByNormalizedKey(masterEntry.raw, pg.masterListRateColumn)) : 0;
-      bankRate = bankCostRow && pg.costTableColumn ? toRate(getByNormalizedKey(bankCostRow, pg.costTableColumn)) : 0;
-    }
+
+    // The MERCHANT rate for a wallet row is one general wallet rate, whatever card is underneath —
+    // that is Noqoody's own pricing decision.
+    //
+    // The BANK rate is not. The bank charges by card scheme, wallet or not: a Credit Card Wallet
+    // transaction costs the Credit Card rate. Reading it from a general Bank_Cost "Wallet" column
+    // costed every Credit Card Wallet transaction at the debit rate, because that column held the
+    // debit value in all seven cost rows. Checked against the OMS Commission field, the scheme
+    // rate reconciles to the cent on Cost IDs 2, 3, 4 and 7, while the old general column was out
+    // by 272.72 across one Daily batch.
+    var merchantRate = isWallet
+      ? toRate(pickByCandidates(masterEntry ? masterEntry.raw : null, WALLET_RATE_CANDIDATES))
+      : (masterEntry && pg.masterListRateColumn ? toRate(getByNormalizedKey(masterEntry.raw, pg.masterListRateColumn)) : 0);
+    var bankRate = bankCostRow && pg.costTableColumn ? toRate(getByNormalizedKey(bankCostRow, pg.costTableColumn)) : 0;
 
     var bankFee = round2(gross * bankRate);
     var noqoodyCharge = round2(gross * merchantRate);
@@ -2899,6 +2907,21 @@
       (report.unresolvedCount > 0 ? ("<br>" + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row and are excluded from this report.") : "") +
       (report.excludedByFrequencyCount > 0 ? ("<br>" + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency and are excluded from this report.") : "");
     body.appendChild(notice);
+
+    // A Bank_Cost workbook still carrying the retired general Wallet column would mislead anyone
+    // editing it — the app no longer reads that cell for anything. Say so rather than ignore it.
+    if (state.bankCostRows && state.bankCostRows.length &&
+        pickByCandidates(state.bankCostRows[0], DISUSED_WALLET_COST_CANDIDATES) !== undefined){
+      var stale = document.createElement("div");
+      stale.className = "banner warn";
+      stale.style.margin = "0 20px 16px";
+      stale.innerHTML = "<strong>Bank_Cost still has a <code>Wallet</code> column, and it is ignored.</strong> " +
+        "The bank charges by card scheme, so a wallet row now takes the bank rate of the card underneath it " +
+        "(Credit Card Wallet &rarr; Credit Card, Debit Card Wallet &rarr; Debit Card, and so on). " +
+        "Delete the column to avoid editing a cell that no longer affects anything. " +
+        "Your <strong>Wallet MerchantRate</strong> in Master_List is unaffected — that is your own pricing, not the bank's cost.";
+      body.appendChild(stale);
+    }
 
     // Per-transaction pricing: which route each merchant took, and anything misconfigured. The
     // legacy count is the retirement signal for the old Rate Per Trnx column.

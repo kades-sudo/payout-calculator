@@ -927,3 +927,99 @@ and the control total still balances at 3,707 / 1,245,071.15.
 - No merchant is assigned `Txn Fee ID 1` yet — the new pricing has a tier but no holder.
 - AMEX / JCB / China UnionPay are `0` on both tiers; the stated contracts named only Credit, Debit,
   Wallet and Himyan.
+
+---
+
+## Fix: wallet bank cost follows the card scheme, not a general Wallet column
+
+**Audit status: PENDING VERIFICATION.** Raised from a discrepancy in Actual Bank Charges.
+
+### The defect
+
+`computePaymentGroupCell` read a wallet row's bank rate from a general `Wallet` column in Bank_Cost:
+
+```js
+bankRate = toRate(pickByCandidates(bankCostRow, WALLET_COST_CANDIDATES));
+```
+
+In all seven Bank_Cost rows that column held **the same value as `Debit Card`**, and differed from
+`Credit Card` in every one. Worse, the single value was applied to *every* wallet section — so a
+Himyan Wallet or AMEX Wallet was also costed at the debit rate.
+
+The bank does not price that way. It charges by **card scheme**, wallet or not: a Credit Card Wallet
+transaction costs the Credit Card rate.
+
+### Evidence — the OMS Commission field is the real charge
+
+Wallet Sales in one Daily batch:
+
+| model | modelled | vs actual (1,631.90) |
+|---|---|---|
+| app before — Bank_Cost `Wallet` column | 1,359.18 | **−272.72** |
+| card scheme column | 1,585.36 | −46.54 |
+
+Per Cost ID, the card-scheme rate reconciles **to the cent**:
+
+```
+Cost ID / group          actual   implied   Bank_Cost   gap
+2  DEBIT CARD WALLET       5.60    0.700%    0.700%    0.00
+3  CREDIT CARD WALLET    282.11    1.100%    1.100%    0.00
+3  DEBIT CARD WALLET       7.82    0.600%    0.600%    0.00
+4  DEBIT CARD WALLET       1.12    0.602%    0.600%    0.00
+7  CREDIT CARD WALLET      7.70    1.851%    1.850%    0.00
+```
+
+### The change
+
+A wallet row now takes the bank rate of the card scheme underneath it, via the section's existing
+`Cost Table Column` — the same lookup card rows already use. This is automatic for any future card
+type and needs no new columns.
+
+The **merchant** rate is unchanged: wallet rows still read one general `Wallet MerchantRate`. That
+is Noqoody's own pricing and has nothing to do with the bank's cost.
+
+The general `Wallet` column has been **deleted from Bank_Cost** (Option 1 of two considered; the
+alternative was keeping it as an explicit per-wallet override). It was removed because the value is
+derived, not data, and a duplicate that can drift is a liability. Removed values, for the record:
+
+```
+Cost ID 1 0.0075 · 2 0.0070 · 3 0.0060 · 4 0.0060 · 5 0.0060 · 6 0.0070 · 7 0.0050
+```
+
+A workbook that still carries the column is **flagged in the report** as ignored, so nobody edits a
+cell that no longer affects anything.
+
+### Verification
+
+`NEW BALANCE DOHA | WALLET`, before and after:
+
+```
+                       before   after
+CREDIT CARD WALLET      0.50%   1.85%
+DEBIT CARD WALLET       0.50%   0.50%
+HIMYAN                  0.50%   0.85%
+AMEX                    0.50%   2.75%
+CHINA UNIONPAY          0.50%   2.50%
+JCB                     0.50%   2.50%
+```
+
+Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, control total
+still 3,707 / 1,245,071.15. The rate test's expectation was updated — it encoded the old
+Wallet-column rule and was stale, not failing.
+
+### Separate finding, not fixed: Cost ID 1 looks stale
+
+The residual sits entirely on Cost ID 1, and it is **not** wallet-specific — card and wallet rows
+agree with each other, which confirms the rule, but both sit above the stored rate:
+
+```
+1 | CREDIT CARD (card)    432 txns   implied 1.821%   Bank_Cost 1.750%
+1 | CREDIT CARD (wallet)   96 txns   implied 1.852%   Bank_Cost 1.750%
+1 | DEBIT CARD  (card)    377 txns   implied 0.773%   Bank_Cost 0.750%
+1 | DEBIT CARD  (wallet)  492 txns   implied 0.775%   Bank_Cost 0.750%
+1 | HIMYAN      (card)    116 txns   implied 0.799%   Bank_Cost 0.800%   OK
+```
+
+Cost ID 1's Credit Card looks like it should be **1.85%** and Debit around **0.775%**. Himyan is
+correct, so it is not a blanket drift. This is a question for the bank, not a code change, and
+nothing was altered.
