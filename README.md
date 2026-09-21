@@ -1023,3 +1023,59 @@ agree with each other, which confirms the rule, but both sit above the stored ra
 Cost ID 1's Credit Card looks like it should be **1.85%** and Debit around **0.775%**. Himyan is
 correct, so it is not a blanket drift. This is a question for the bank, not a code change, and
 nothing was altered.
+
+---
+
+## Bank Difference flagging, and merchant drill-down
+
+**Audit status: PENDING VERIFICATION.**
+
+### 1. Bank Difference is flagged where it happens, and names its cause
+
+Every payment-group cell now carries `actualBankFee` — what the bank actually charged *that section*,
+from the OMS Commission field — alongside the modelled `bankFee`. A merchant line whose
+`|Bank Difference|` exceeds **1.00** (`BANK_DIFF_FLAG_THRESHOLD`) is marked in the Bank Difference
+cell, and its tooltip names the sections responsible. Sections contributing under 0.10
+(`BANK_DIFF_SECTION_MIN`) are rounding, not a cause, and are left out.
+
+A summary banner groups the flagged lines **by cause**, because the same section drifting across
+several merchants points at a Bank_Cost cell rather than at the merchants:
+
+```
+9 merchant lines differ from the bank by more than 1.00 — -262.72 in total.
+ • Credit Card        -183.37 across 6 merchants.
+   Bank_Cost says 1.75%, the bank charged 1.90% on 122,237.00 gross.
+   Same section across several merchants — check the Bank_Cost cell, not the merchants.
+ • Debit Card WALLET   -36.25 across 3 merchants.  Bank_Cost 0.75%, bank charged 0.85%
+ • Debit Card          -33.80 across 3 merchants.  Bank_Cost 0.75%, bank charged 0.85%
+ • Credit Card WALLET   -9.30 across 1 merchant.   Bank_Cost 1.75%, bank charged 1.90%
+```
+
+On the first run this independently reproduced the Cost ID 1 staleness recorded in the previous
+section — the feature found the known defect without being told about it.
+
+### 2. Drill-down: double-click a merchant row
+
+Opens that merchant's own transactions, the payout report's equivalent of Excel's PivotTable
+**Show Details**. Rows are keyed the way the report groups them (**MID + Merchant Key**), so a shared
+aggregator MID never pulls in another merchant's transactions — verified on
+`777100432320320`, which carries ten merchants: the panel returned NEW BALANCE DOHA's 33 rows and
+nothing else.
+
+The panel shows Transactions / Cleared (Sale) / Gross (Sale) / Bank Commission, the full Process Raw
+Details columns, closes on Escape or backdrop click, and **Download these rows** writes a workbook
+whose sheet is named after the merchant, with amounts as real numbers (identifiers stay text).
+
+### A bug this introduced, and caught
+
+Adding the `drillable` class broke `applyMerchantFilter`, which tested `tr.className !== ""` by
+string equality — every data row would have been skipped and the merchant search would have matched
+nothing. It now tests `classList.contains("drillable")`. Several Playwright tests had the same
+brittleness (`tr.className === 'wallet-row'`) and were updated to `classList.contains`; that was a
+test defect, not an app one.
+
+### Verification
+
+Merchant search: 72 rows unfiltered, 4 for "NEW BALANCE", 5 by MID `777100432320320`, 72 when
+cleared. Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, control
+total still 3,707 / 1,245,071.15, no page errors.

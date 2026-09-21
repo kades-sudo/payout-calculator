@@ -402,6 +402,53 @@
   .report-table .sticky-col-2{ width:130px; min-width:130px; max-width:130px; }
   .report-table .sticky-col-3{ width:190px; min-width:190px; max-width:190px; overflow:hidden; text-overflow:ellipsis; }
 
+  /* ---- Drill-down: a merchant's own transactions, opened from the report ---- */
+  .report-table tbody tr.drillable{ cursor:pointer; }
+  .drill-backdrop{
+    position:fixed; inset:0; background:rgba(12,13,22,0.5); z-index:60;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .drill-panel{
+    background:var(--surface); border:1px solid var(--border); border-radius:16px;
+    box-shadow:var(--shadow); width:min(1180px,100%); max-height:88vh;
+    display:flex; flex-direction:column; min-width:0; overflow:hidden;
+  }
+  .drill-head{
+    padding:16px 20px; border-bottom:1px solid var(--border);
+    display:flex; align-items:flex-start; gap:14px; flex-wrap:wrap;
+  }
+  .drill-title{ font-weight:600; font-size:15px; min-width:0; }
+  .drill-sub{ font-size:12px; color:var(--ink-muted); margin-top:3px; line-height:1.5; }
+  .drill-actions{ margin-left:auto; display:flex; gap:8px; align-items:center; }
+  .drill-close{
+    border:1px solid var(--border); background:var(--surface); color:var(--ink);
+    border-radius:9px; width:32px; height:32px; cursor:pointer; font-size:16px; line-height:1;
+  }
+  .drill-close:hover{ border-color:var(--accent); color:var(--accent); }
+  .drill-stats{ display:flex; gap:8px; flex-wrap:wrap; padding:12px 20px 0; }
+  .drill-stat{
+    background:var(--surface-2); border:1px solid var(--border); border-radius:10px;
+    padding:8px 12px; min-width:0;
+  }
+  .drill-stat .v{ font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; font-size:15px; font-weight:600; }
+  .drill-stat .l{ font-size:10.5px; color:var(--ink-muted); text-transform:uppercase; letter-spacing:.05em; }
+  .drill-body{ overflow:auto; padding:12px 20px 18px; min-height:0; }
+  .drill-body table{ font-size:11.5px; }
+  .drill-body thead th{ position:sticky; top:0; z-index:1; }
+  .drill-empty{ padding:30px; text-align:center; color:var(--ink-muted); font-size:13px; }
+
+  /* Bank Difference past the flag threshold — marked where it happens, cause in the tooltip. */
+  .report-table tbody td.bank-diff-flag{
+    background:var(--warn-soft); color:var(--warn); font-weight:600; cursor:help;
+  }
+  .report-table tbody td.bank-diff-flag .flag-dot{
+    display:inline-grid; place-items:center; width:14px; height:14px; border-radius:50%;
+    background:var(--warn); color:var(--surface); font-size:9px; font-weight:700; margin-left:4px;
+    vertical-align:middle; font-family:"IBM Plex Sans",sans-serif;
+  }
+  .bank-diff-list{ margin:6px 0 0; padding-left:18px; line-height:1.7; }
+  .bank-diff-list code{ font-family:"IBM Plex Mono",monospace; font-size:11.5px; }
+
   .banner{
     margin:0 20px 16px; padding:10px 14px; border-radius:10px; font-size:12.5px; line-height:1.5;
   }
@@ -1316,6 +1363,11 @@
   // supplied directly, not derived from any uploaded sheet.
   var GAIN_PER_REFUND_DISPUTE = 5;
 
+  // Bank Difference = modelled Bank Fee - what the bank actually charged (OMS Commission). Anything
+  // past a riyal is worth a look; sections contributing less than a tenth are rounding, not a cause.
+  var BANK_DIFF_FLAG_THRESHOLD = 1;
+  var BANK_DIFF_SECTION_MIN = 0.1;
+
   function countRefundDispute(rows){
     return rows.reduce(function(n, r){ return n + (txnClass(r.transactionType) === "refunddispute" ? 1 : 0); }, 0);
   }
@@ -1410,6 +1462,10 @@
     var bankRate = bankCostRow && pg.costTableColumn ? toRate(getByNormalizedKey(bankCostRow, pg.costTableColumn)) : 0;
 
     var bankFee = round2(gross * bankRate);
+    // What the bank actually charged THIS section, from the OMS Commission field. Carried alongside
+    // the modelled fee so a Bank Difference can name the section that caused it instead of leaving
+    // a single number to be chased by hand.
+    var actualBankFee = round2(sumBy(saleRows, function(r){ return toNumber(r.commission); }));
     var noqoodyCharge = round2(gross * merchantRate);
     var ratePerTxn = resolveRatePerTxn(masterEntry, pg, isBelow, isWallet, txnFeeIndex);
     var noqoodyChargePerTxn = round2(clearedTxn * ratePerTxn);
@@ -1417,7 +1473,7 @@
     var internalTransfer = round2(gross - noqoodyCharge - noqoodyChargePerTxn - refund);
 
     return {
-      name: pg.name, gross: gross, bankRate: bankRate, bankFee: bankFee, merchantRate: merchantRate,
+      name: pg.name, gross: gross, bankRate: bankRate, bankFee: bankFee, actualBankFee: actualBankFee, merchantRate: merchantRate,
       noqoodyCharge: noqoodyCharge, clearedTxn: clearedTxn, txnCount: txnCount, ratePerTxn: ratePerTxn,
       noqoodyChargePerTxn: noqoodyChargePerTxn, refund: refund, profit: profit, internalTransfer: internalTransfer
     };
@@ -1454,6 +1510,21 @@
     var fee = (isPrimary && g.masterEntry) ? g.masterEntry.payoutProcessingFee : 0;
 
     var bankDifference = round2(totalBankFee - actualBankCharges);
+
+    // Which sections account for the difference, and why. A section is only worth naming when its
+    // own modelled fee misses what the bank charged it; the implied rate is what the bank's own
+    // numbers work out to, so a wrong Bank_Cost cell is visible rather than merely suspected.
+    var bankDiffSections = [];
+    groups.forEach(function(c){
+      var d = round2(c.bankFee - c.actualBankFee);
+      if (Math.abs(d) < BANK_DIFF_SECTION_MIN || !c.gross) return;
+      bankDiffSections.push({
+        name: c.name, isWallet: isWallet, diff: d,
+        gross: c.gross, bankFee: c.bankFee, actualBankFee: c.actualBankFee,
+        configuredRate: c.bankRate, impliedRate: c.gross ? c.actualBankFee / c.gross : 0
+      });
+    });
+    bankDiffSections.sort(function(a, b){ return Math.abs(b.diff) - Math.abs(a.diff); });
     var deductedRentOthers = round2(totalInternalTransfer - manual.rent - gain);
     var deductedRent = round2(totalInternalTransfer - manual.rent);
     var merchantPayout = round2(deductedRentOthers - fee);
@@ -1462,8 +1533,8 @@
       id: id,
       mid: g.mid,
       merchantKey: g.merchantKey,
-      accountCode: g.accountCode,
       merchantName: g.merchantName,
+      accountCode: g.accountCode,
       label: g.merchantName + (isWallet ? " | WALLET" : "") + (isBelow ? " | BELOW " + threshold : ""),
       isBelow: isBelow,
       isWallet: isWallet,
@@ -1476,6 +1547,8 @@
       totalBankFee: totalBankFee,
       actualBankCharges: actualBankCharges,
       bankDifference: bankDifference,
+      bankDiffFlagged: Math.abs(bankDifference) > BANK_DIFF_FLAG_THRESHOLD,
+      bankDiffSections: bankDiffSections,
       totalInternalTransfer: totalInternalTransfer,
       rent: manual.rent,
       gainForBankCharge: gain,
@@ -2260,6 +2333,110 @@
 
   // Merchant filter — a display filter over the rendered report rows only. It never changes any
   // computed figure, the subtotals, the grand total or the export, which always cover every merchant.
+  /* ---------------- drill-down: one merchant's transactions ---------------- */
+  // Double-clicking a report row opens the transactions behind it — the payout report's own
+  // "Show Details". The rows come from the processed set, keyed the same way the report groups
+  // them (MID + Merchant Key), so a shared aggregator MID never pulls in another merchant's work.
+  function drillRowsFor(mid, merchantKey){
+    if (!state.result || !state.result.processed) return [];
+    var m = norm(mid), k = norm(merchantKey);
+    return state.result.processed.filter(function(r){
+      return r.merchantMatched && norm(r.merchantId) === m && norm(r._merchantKey) === k;
+    });
+  }
+
+  function openDrillDown(mid, merchantKey, merchantName){
+    var rows = drillRowsFor(mid, merchantKey);
+    var sales = rows.filter(function(r){ return txnClass(r.transactionType) === "sale"; });
+    var gross = round2(sumBy(sales, function(r){ return toNumber(r.grossAmount); }));
+    var commission = round2(sumBy(sales, function(r){ return toNumber(r.commission); }));
+
+    var back = document.createElement("div");
+    back.className = "drill-backdrop";
+    back.setAttribute("role", "dialog");
+    back.setAttribute("aria-modal", "true");
+
+    var panel = document.createElement("div");
+    panel.className = "drill-panel";
+
+    var head = document.createElement("div");
+    head.className = "drill-head";
+    head.innerHTML =
+      '<div style="min-width:0"><div class="drill-title">' + escapeHtml(merchantName) + "</div>" +
+      '<div class="drill-sub">MID ' + escapeHtml(mid) +
+        (merchantKey ? " &middot; Merchant Key " + escapeHtml(merchantKey) : "") +
+        " &middot; every transaction behind this merchant's report row</div></div>" +
+      '<div class="drill-actions">' +
+        '<button type="button" class="btn btn-secondary" id="drillDownloadBtn">Download these rows</button>' +
+        '<button type="button" class="drill-close" id="drillCloseBtn" aria-label="Close">&times;</button>' +
+      "</div>";
+    panel.appendChild(head);
+
+    var stats = document.createElement("div");
+    stats.className = "drill-stats";
+    stats.innerHTML =
+      '<div class="drill-stat"><div class="v">' + fmtCount(rows.length) + '</div><div class="l">Transactions</div></div>' +
+      '<div class="drill-stat"><div class="v">' + fmtCount(sales.length) + '</div><div class="l">Cleared (Sale)</div></div>' +
+      '<div class="drill-stat"><div class="v">' + fmtAmount(gross) + '</div><div class="l">Gross (Sale)</div></div>' +
+      '<div class="drill-stat"><div class="v">' + fmtAmount(commission) + '</div><div class="l">Bank Commission</div></div>';
+    panel.appendChild(stats);
+
+    var bodyWrap = document.createElement("div");
+    bodyWrap.className = "drill-body";
+    if (!rows.length){
+      bodyWrap.innerHTML = '<div class="drill-empty">No transactions found for this merchant in the processed batch.</div>';
+    } else {
+      var thead = "<thead><tr>" + COLUMNS.map(function(c){ return "<th>" + escapeHtml(c.label) + "</th>"; }).join("") + "</tr></thead>";
+      var tbody = "<tbody>" + rows.map(function(r){
+        return "<tr>" + COLUMNS.map(function(c){
+          var v = r[c.key];
+          if (c.num) return '<td class="num">' + fmtAmount(v) + "</td>";
+          if (c.date) return "<td>" + escapeHtml(displayDate(v)) + "</td>";
+          return "<td>" + escapeHtml(v === undefined || v === null ? "" : v) + "</td>";
+        }).join("") + "</tr>";
+      }).join("") + "</tbody>";
+      bodyWrap.innerHTML = "<table>" + thead + tbody + "</table>";
+    }
+    panel.appendChild(bodyWrap);
+    back.appendChild(panel);
+    document.body.appendChild(back);
+
+    function close(){
+      document.removeEventListener("keydown", onKey);
+      if (back.parentNode) back.parentNode.removeChild(back);
+    }
+    function onKey(e){ if (e.key === "Escape") close(); }
+    document.addEventListener("keydown", onKey);
+    back.addEventListener("click", function(e){ if (e.target === back) close(); });
+    panel.querySelector("#drillCloseBtn").addEventListener("click", close);
+    panel.querySelector("#drillDownloadBtn").addEventListener("click", function(){
+      downloadDrillDown(rows, merchantName, mid);
+    });
+  }
+
+  // The same rows as a worksheet, named after the merchant — the Excel "Show Details" equivalent.
+  function downloadDrillDown(rows, merchantName, mid){
+    if (!rows.length) return;
+    var sheet = buildProcessRawDetailsSheet(rows);
+    var wb = XLSX.utils.book_new();
+    // Excel sheet names cap at 31 chars and reject : \ / ? * [ ]
+    var safe = String(merchantName).replace(/[:\\\/?*\[\]]/g, " ").trim().slice(0, 31) || "Merchant";
+    XLSX.utils.book_append_sheet(wb, sheet, safe);
+    var buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+    var blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    var filename = "Details_" + String(merchantName).replace(/[^A-Za-z0-9]+/g, "_").slice(0, 40) + "_" + mid + ".xlsx";
+    if (!downloadsApi){ alert("Downloads aren't available in this preview. Filename would be: " + filename); return; }
+    downloadsApi.save({ filename: filename, data: blob });
+  }
+
+  // Delegated so it survives every re-render of the report table.
+  document.addEventListener("dblclick", function(e){
+    var tr = e.target && e.target.closest ? e.target.closest("tr.drillable") : null;
+    if (!tr || !tr.dataset || tr.dataset.mid === undefined) return;
+    if (e.target.tagName === "INPUT") return;   // editing Rent / Portal Amount, not drilling
+    openDrillDown(tr.dataset.mid, tr.dataset.merchantKey || "", tr.dataset.merchantName || "");
+  });
+
   function applyMerchantFilter(){
     var q = norm(state.merchantFilter);
     var body = els.payoutReportBody;
@@ -2268,9 +2445,10 @@
     if (!table) return;
     var shown = 0, total = 0;
     Array.prototype.forEach.call(table.querySelectorAll("tbody tr"), function(tr){
-      // Data rows are the plain ones and the wallet rows; section labels, subtotals and the grand
-      // total always stay visible so a filtered view still shows what it is a subset of.
-      if (tr.className !== "" && tr.className !== "wallet-row") return;
+      // Data rows are the ones carrying "drillable"; section labels, subtotals and the grand total
+      // always stay visible so a filtered view still shows what it is a subset of. Tested by class
+      // rather than string-equality on className, which silently broke when a class was added.
+      if (!tr.classList.contains("drillable")) return;
       total++;
       var cells = tr.children;
       var hay = norm((tr.dataset.mid || "") + (cells[2] ? cells[2].textContent : ""));
@@ -2871,7 +3049,29 @@
     if (col.editable && !isSubtotal){
       return '<td class="num"><input type="number" step="0.01" class="report-input" data-line="' + escapeHtml(line.id) + '" data-field="' + col.field + '" value="' + v + '"></td>';
     }
+    // Bank Difference past the threshold is flagged where it happens, and names the sections that
+    // caused it — the modelled rate against the rate the bank's own charge implies.
+    if (col.key === "bankDifference" && !isSubtotal && line.bankDiffFlagged){
+      return '<td class="num bank-diff-flag" title="' + escapeHtml(bankDiffExplanation(line)) + '">' +
+             fmtAmount(v) + ' <span class="flag-dot" aria-hidden="true">!</span></td>';
+    }
     return '<td class="num">' + fmtAmount(v) + "</td>";
+  }
+
+  // Plain-text version of the cause, for the cell tooltip and the summary panel.
+  function bankDiffExplanation(line){
+    var parts = ["Bank Difference " + fmtAmount(line.bankDifference) +
+                 "  (modelled " + fmtAmount(line.totalBankFee) + " vs actual " + fmtAmount(line.actualBankCharges) + ")"];
+    if (!line.bankDiffSections || !line.bankDiffSections.length){
+      parts.push("No single section accounts for it — the gap is spread below " + BANK_DIFF_SECTION_MIN + ".");
+    } else {
+      line.bankDiffSections.forEach(function(sec){
+        parts.push("• " + sec.name + (sec.isWallet ? " WALLET" : "") + ": " + fmtAmount(sec.diff) +
+          "  on gross " + fmtAmount(sec.gross) +
+          " — Bank_Cost " + fmtPct(sec.configuredRate) + ", bank charged " + fmtPct(sec.impliedRate));
+      });
+    }
+    return parts.join("\n");
   }
 
   function formatGroupValue(col, v){
@@ -2903,10 +3103,53 @@
       "This report groups by Card Type 2 (payment group), only includes merchants tagged " + escapeHtml(state.frequency || "") + " in Master_List, and applies the Master_List / Terminal_Mapping / Bank_Cost / Card_Types connections and the Below Amount Rule split. " +
       "<strong>Actual Bank Charges</strong> is computed from the OMS Commission field. Not yet implemented, so treated as 0 / unused: " +
       "<strong>Special_Rate</strong> overrides for Account Code 5. <strong>Wallet Classification</strong> and <strong>Classification</strong> are now resolved from the Prefix + Wallet_Rules sheets. " +
-      "<strong>Rent</strong> and <strong>Portal Amount</strong> come from your payout portal, not from any uploaded sheet — enter them per merchant below; everything downstream recalculates live." +
+      "<strong>Rent</strong> and <strong>Portal Amount</strong> come from your payout portal, not from any uploaded sheet — enter them per merchant below; everything downstream recalculates live. " +
+      "<strong>Double-click any merchant row</strong> to see the transactions behind it, and download them as their own worksheet." +
       (report.unresolvedCount > 0 ? ("<br>" + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row and are excluded from this report.") : "") +
       (report.excludedByFrequencyCount > 0 ? ("<br>" + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency and are excluded from this report.") : "");
     body.appendChild(notice);
+
+    // Every merchant whose Bank Difference passes the threshold, with the sections behind it. The
+    // same section missing across many merchants points at a Bank_Cost cell, not at one merchant.
+    var flagged = report.merchantLines.filter(function(l){ return l.bankDiffFlagged; });
+    if (flagged.length){
+      var byCause = {};
+      flagged.forEach(function(l){
+        (l.bankDiffSections || []).forEach(function(sec){
+          var key = sec.name + (sec.isWallet ? " WALLET" : "") + "|" + (Math.round(sec.configuredRate * 1e6) / 1e6);
+          byCause[key] = byCause[key] || { name: sec.name, isWallet: sec.isWallet, configuredRate: sec.configuredRate,
+                                           merchants: 0, diff: 0, gross: 0, actual: 0 };
+          var c = byCause[key];
+          c.merchants++; c.diff += sec.diff; c.gross += sec.gross; c.actual += sec.actualBankFee;
+        });
+      });
+      var causes = Object.keys(byCause).map(function(k){ return byCause[k]; })
+        .sort(function(a, b){ return Math.abs(b.diff) - Math.abs(a.diff); });
+
+      var bd = document.createElement("div");
+      bd.className = "banner warn";
+      bd.style.margin = "0 20px 16px";
+      var totalDiff = round2(sumBy(flagged, function(l){ return l.bankDifference; }));
+      var html = "<strong>" + flagged.length + " merchant line" + (flagged.length === 1 ? "" : "s") +
+        " differ from the bank by more than " + fmtAmount(BANK_DIFF_FLAG_THRESHOLD) + "</strong> — " +
+        fmtAmount(totalDiff) + " in total. Modelled Bank Fee against the OMS Commission the bank actually charged.";
+      if (causes.length){
+        html += "<ul class=\"bank-diff-list\">";
+        causes.slice(0, 8).forEach(function(c){
+          var implied = c.gross ? c.actual / c.gross : 0;
+          html += "<li><strong>" + escapeHtml(c.name + (c.isWallet ? " WALLET" : "")) + "</strong> — " +
+            fmtAmount(c.diff) + " across " + c.merchants + " merchant" + (c.merchants === 1 ? "" : "s") +
+            ". Bank_Cost says <code>" + fmtPct(c.configuredRate) + "</code>, the bank charged <code>" +
+            fmtPct(implied) + "</code> on " + fmtAmount(c.gross) + " gross." +
+            (c.merchants > 1 ? " <em>Same section across several merchants — check the Bank_Cost cell, not the merchants.</em>" : "") +
+            "</li>";
+        });
+        if (causes.length > 8) html += "<li>… and " + (causes.length - 8) + " more</li>";
+        html += "</ul>";
+      }
+      bd.innerHTML = html;
+      body.appendChild(bd);
+    }
 
     // A Bank_Cost workbook still carrying the retired general Wallet column would mislead anyone
     // editing it — the app no longer reads that cell for anything. Say so rather than ignore it.
@@ -3041,6 +3284,12 @@
         // The MID cell is blank on continuation rows, so carry it here — otherwise searching a MID
         // would match only the merchant's first row instead of its whole block.
         tr.dataset.mid = line.mid;
+        // Drill-down key: the merchant a row belongs to, so a double-click anywhere on the row can
+        // pull that merchant's transactions back out of the processed set.
+        tr.dataset.merchantKey = line.merchantKey === undefined || line.merchantKey === null ? "" : String(line.merchantKey);
+        tr.dataset.merchantName = line.merchantName || line.label;
+        tr.classList.add("drillable");
+        tr.title = "Double-click to see this merchant's transactions";
         tr.innerHTML =
           stickyTd(line.isPrimary ? String(line.no) : "", 0) +
           stickyTd(line.isPrimary ? escapeHtml(line.mid) : "", 1) +
