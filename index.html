@@ -9,43 +9,48 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <style>
+  /* Every colour pair below was checked for WCAG AA contrast (>= 4.5:1) in both themes —
+     body text, muted text, accent text, the accent button, and each status chip on its own soft
+     background. The accent is purple rather than green precisely so that green can mean one thing
+     only: "ok". Status colours never double as brand colours. */
   :root{
-    --bg:#EEF1EF; --surface:#FFFFFF; --surface-2:#F7F9F7; --border:#D7DEDA;
-    --ink:#16211B; --ink-muted:#5C6B62;
-    --accent:#245C4B; --accent-soft:#DCEAE4; --accent-contrast:#FFFFFF;
-    --warn:#9A6324; --warn-soft:#F4E3CB;
-    --danger:#A23B2E; --danger-soft:#F5DCD6;
-    --ok:#2E7D4F; --ok-soft:#DCEEE0;
-    --pending:#5C6B62; --pending-soft:#E4E8E5;
-    --shadow: 0 1px 2px rgba(22,33,27,0.06), 0 8px 24px -12px rgba(22,33,27,0.18);
+    --bg:#F4F5FA; --surface:#FFFFFF; --surface-2:#F7F8FC; --border:#E4E6F0;
+    --ink:#1A1B2E; --ink-muted:#6B6E85;
+    --accent:#6341E8; --accent-soft:#EDE9FE; --accent-contrast:#FFFFFF;
+    --warn:#B45309; --warn-soft:#FEF3C7;
+    --danger:#B91C1C; --danger-soft:#FEE2E2;
+    --ok:#15803D; --ok-soft:#DCFCE7;
+    --pending:#5B5E75; --pending-soft:#EEF0F6;
+    --shadow: 0 1px 2px rgba(26,27,46,0.05), 0 8px 24px -12px rgba(26,27,46,0.16);
 
-    /* Sidebar-only palette (reference design). Never used in the content area. */
+    /* Sidebar-only palette. Dark in both themes, as in the reference. */
     --rail-w:248px;
-    --rail:#252845; --rail-2:#31355A; --rail-line:#3A3E63;
-    --rail-ink:#EDEFF8; --rail-muted:#A7ADCB;
-    --lime:#D6F35E; --lime-ink:#1E2A06;
+    --rail:#1E2030; --rail-2:#2A2D42; --rail-line:#343850;
+    --rail-ink:#EDEEF6; --rail-muted:#A6AAC4;
   }
+  /* Follows the system unless the header toggle has forced a theme. */
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
-      --bg:#0E1512; --surface:#141D19; --surface-2:#1A2420; --border:#2A3832;
-      --ink:#E7ECE8; --ink-muted:#9AACA1;
-      --accent:#58B79A; --accent-soft:#1D3A31; --accent-contrast:#06110D;
-      --warn:#E0A855; --warn-soft:#3A2C15;
-      --danger:#E28677; --danger-soft:#3B1E19;
-      --ok:#6FCB8F; --ok-soft:#163420;
-      --pending:#9AACA1; --pending-soft:#212B26;
-      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+      --bg:#14151C; --surface:#1C1E27; --surface-2:#242632; --border:#333644;
+      --ink:#ECEDF3; --ink-muted:#A2A5B8;
+      --accent:#A794FF; --accent-soft:#2A2450; --accent-contrast:#140A26;
+      --warn:#FBBF24; --warn-soft:#3A2C10;
+      --danger:#FB8A8A; --danger-soft:#3B1A1A;
+      --ok:#5BE38B; --ok-soft:#14321F;
+      --pending:#A2A5B8; --pending-soft:#262835;
+      --shadow: 0 1px 2px rgba(0,0,0,0.34), 0 10px 26px -14px rgba(0,0,0,0.6);
     }
   }
+  /* Forced dark, so the toggle works on a light machine too. */
   :root[data-theme="dark"]{
-    --bg:#0E1512; --surface:#141D19; --surface-2:#1A2420; --border:#2A3832;
-    --ink:#E7ECE8; --ink-muted:#9AACA1;
-    --accent:#58B79A; --accent-soft:#1D3A31; --accent-contrast:#06110D;
-    --warn:#E0A855; --warn-soft:#3A2C15;
-    --danger:#E28677; --danger-soft:#3B1E19;
-    --ok:#6FCB8F; --ok-soft:#163420;
-    --pending:#9AACA1; --pending-soft:#212B26;
-    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+      --bg:#14151C; --surface:#1C1E27; --surface-2:#242632; --border:#333644;
+      --ink:#ECEDF3; --ink-muted:#A2A5B8;
+      --accent:#A794FF; --accent-soft:#2A2450; --accent-contrast:#140A26;
+      --warn:#FBBF24; --warn-soft:#3A2C10;
+      --danger:#FB8A8A; --danger-soft:#3B1A1A;
+      --ok:#5BE38B; --ok-soft:#14321F;
+      --pending:#A2A5B8; --pending-soft:#262835;
+      --shadow: 0 1px 2px rgba(0,0,0,0.34), 0 10px 26px -14px rgba(0,0,0,0.6);
   }
 
   *{box-sizing:border-box;}
@@ -73,7 +78,7 @@
   .brand{ display:flex; align-items:center; gap:10px; padding:4px 8px 18px; }
   .brand-mark{
     flex:none; width:34px; height:34px; border-radius:10px; display:grid; place-items:center;
-    background:var(--lime); color:var(--lime-ink);
+    background:var(--accent); color:#FFFFFF;
   }
   .brand-mark svg{ width:18px; height:18px; display:block; }
   .brand-text{ min-width:0; }
@@ -94,15 +99,15 @@
     background:var(--rail-2); color:var(--rail-muted); transition:background .15s,color .15s;
   }
   .nav-btn .nav-icon svg{ width:16px; height:16px; display:block; }
-  .nav-btn[aria-current="page"]{ background:var(--lime); color:var(--lime-ink); font-weight:600; }
-  .nav-btn[aria-current="page"] .nav-icon{ background:rgba(30,42,6,0.14); color:var(--lime-ink); }
-  .nav-btn:focus-visible{ outline:2px solid var(--lime); outline-offset:2px; }
+  .nav-btn[aria-current="page"]{ background:var(--accent); color:#FFFFFF; font-weight:600; }
+  .nav-btn[aria-current="page"] .nav-icon{ background:rgba(255,255,255,0.16); color:#FFFFFF; }
+  .nav-btn:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
   .nav-label{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .nav-tag{
     flex:none; margin-left:auto; font-size:9px; letter-spacing:.04em; text-transform:uppercase;
     color:var(--rail-muted); background:var(--rail-2); border-radius:99px; padding:2px 5px;
   }
-  .nav-btn[aria-current="page"] .nav-tag{ color:var(--lime-ink); background:rgba(30,42,6,0.14); }
+  .nav-btn[aria-current="page"] .nav-tag{ color:#FFFFFF; background:rgba(255,255,255,0.18); }
   .nav-sep{ height:1px; background:var(--rail-line); margin:12px 4px; }
   .nav-foot{ font-size:10.5px; color:var(--rail-muted); line-height:1.45; padding:2px 8px; margin-top:auto; }
 
@@ -121,6 +126,45 @@
   .ds-item.ok .ds-dot{ background:var(--ok); }
   .ds-item.warn .ds-dot{ background:var(--warn); }
   .ds-spacer{ margin-left:auto; }
+
+  /* ---- Header controls: merchant search + theme toggle ---- */
+  .ds-search{
+    display:flex; align-items:center; gap:7px; background:var(--surface-2);
+    border:1px solid var(--border); border-radius:9px; padding:5px 9px; min-width:0;
+  }
+  .ds-search svg{ width:14px; height:14px; flex:none; color:var(--ink-muted); }
+  .ds-search input{
+    border:none; background:none; font:inherit; font-size:12px; color:var(--ink);
+    width:180px; min-width:0; padding:0;
+  }
+  .ds-search input:focus{ outline:none; }
+  .ds-search:focus-within{ border-color:var(--accent); }
+  .ds-search .clear{
+    border:none; background:none; cursor:pointer; color:var(--ink-muted); font-size:15px;
+    line-height:1; padding:0 2px;
+  }
+  .theme-toggle{ display:flex; gap:2px; background:var(--surface-2); border:1px solid var(--border); border-radius:9px; padding:2px; }
+  .theme-toggle button{
+    border:none; background:none; cursor:pointer; border-radius:7px; padding:4px 7px;
+    display:grid; place-items:center; color:var(--ink-muted);
+  }
+  .theme-toggle button svg{ width:14px; height:14px; display:block; }
+  .theme-toggle button[aria-pressed="true"]{ background:var(--surface); color:var(--accent); box-shadow:var(--shadow); }
+  .theme-toggle button:focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+
+  /* ---- Payout-by-category bars ---- */
+  .catbars{ display:flex; flex-direction:column; gap:9px; }
+  .catbar{ display:grid; grid-template-columns:minmax(96px,150px) minmax(0,1fr) auto; gap:12px; align-items:center; }
+  .catbar-name{ font-size:12px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* display:block matters — these are spans, and width/height are ignored on inline boxes. */
+  .catbar-track{ display:block; height:10px; border-radius:99px; background:var(--surface-2); overflow:hidden; }
+  .catbar-fill{ display:block; height:100%; border-radius:99px; background:var(--accent); min-width:2px; }
+  .catbar-fill.zero{ background:var(--border); }
+  .catbar-val{
+    font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums;
+    font-size:12px; color:var(--ink); text-align:right; min-width:98px;
+  }
+  .catbar.muted .catbar-name, .catbar.muted .catbar-val{ color:var(--ink-muted); }
 
   .view[hidden]{ display:none; }
   .view{ display:flex; flex-direction:column; gap:18px; min-width:0; }
@@ -617,6 +661,9 @@
     walletRulesRows: null,    // Wallet_Rules sheet — Card Type (On us/Off us) -> match / no-match label
     frequency: null,
     view: "calculator",      // active section in the sidebar
+    theme: "system",         // "system" | "light" | "dark"
+    merchantFilter: "",      // display-only filter over the report rows
+    searchFocused: false,
     omsFile: null,            // {name, rows}
     isSample: false,
     result: null,             // {processed, unmatchedMerchants, unmatchedCardTypeCount}
@@ -1537,7 +1584,11 @@
     box: '<path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/>',
     receipt: '<path d="M5 3h14v18l-2.3-1.6L14.4 21l-2.4-1.6L9.6 21l-2.3-1.6L5 21V3Z"/><path d="M9 8h6"/><path d="M9 12h6"/>',
     transfer: '<rect x="2" y="6" width="20" height="12" rx="2.5"/><circle cx="12" cy="12" r="2.6"/><path d="M6 10v4"/><path d="M18 10v4"/>',
-    profit: '<path d="M3 17l5.5-5.5 3.5 3.5L21 6"/><path d="M15 6h6v6"/>'
+    profit: '<path d="M3 17l5.5-5.5 3.5 3.5L21 6"/><path d="M15 6h6v6"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
+    sun: '<circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5 5l1.4 1.4M17.6 17.6L19 19M19 5l-1.4 1.4M6.4 17.6L5 19"/>',
+    moon: '<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/>',
+    monitor: '<rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8.5 21h7M12 17v4"/>'
   };
   var CATEGORY_ICON = {
     creditcard: "creditcard", debitcard: "debitcard", debitwallet: "wallet", wallet: "wallet",
@@ -1682,6 +1733,22 @@
               " · " + fmtCount(c.clearedTxn) + " cleared"
       });
     }).join("") + "</div>";
+
+    // Bars, so nine categories can be compared against each other in one pass — the cards below
+    // carry the exact figures, the bars carry the relative size. Scaled to the largest category.
+    var maxTransfer = d.categories.reduce(function(m, c){ return Math.max(m, c.internalTransfer); }, 0);
+    html += '<div class="dash-head"><div class="dash-title">Payout share by payment category</div>' +
+      '<div class="dash-sub">Internal Transfer, relative to the largest category</div></div>';
+    html += '<div class="panel" style="padding:16px 18px;"><div class="catbars">' +
+      d.categories.map(function(c){
+        var pct = maxTransfer > 0 ? (c.internalTransfer / maxTransfer) * 100 : 0;
+        return '<div class="catbar' + (c.internalTransfer === 0 ? " muted" : "") + '">' +
+          '<span class="catbar-name" title="' + escapeHtml(c.name) + '">' + escapeHtml(c.name) + "</span>" +
+          '<span class="catbar-track"><span class="catbar-fill' + (c.internalTransfer === 0 ? " zero" : "") +
+            '" style="width:' + (c.internalTransfer === 0 ? 0 : Math.max(pct, 1.2)) + '%"></span></span>' +
+          '<span class="catbar-val">' + fmtAmount(c.internalTransfer) + "</span>" +
+        "</div>";
+      }).join("") + "</div></div>";
 
     html += '<div class="dash-head"><div class="dash-title">Total payout amount by payment category</div>' +
       '<div class="dash-sub">Internal Transfer per category · main and Below Amount rows both included</div></div>';
@@ -1944,7 +2011,91 @@
       item(!!state.result, "Processed", state.result ? fmtCount(state.result.processed.length) + " rows" : "") +
       item(!!state.payoutReport, "Payout report", state.payoutReport ? fmtCount(state.payoutReport.merchantLines.length) + " lines" : "") +
       '<span class="ds-spacer"></span>' +
-      (state.isSample ? '<span class="chip pending">example data</span>' : "");
+      (state.isSample ? '<span class="chip pending">example data</span>' : "") +
+      '<span class="ds-search">' + iconSvg(ICON_PATHS.search) +
+        '<input id="merchantSearch" type="search" placeholder="Filter merchants…" ' +
+          'value="' + escapeHtml(state.merchantFilter) + '" aria-label="Filter the payout report by merchant or MID">' +
+        (state.merchantFilter ? '<button type="button" class="clear" id="clearSearch" aria-label="Clear filter">×</button>' : "") +
+      "</span>" +
+      '<span class="theme-toggle" role="group" aria-label="Colour theme">' +
+        themeBtn("light", "Light", ICON_PATHS.sun) +
+        themeBtn("dark", "Dark", ICON_PATHS.moon) +
+        themeBtn("system", "Match system", ICON_PATHS.monitor) +
+      "</span>";
+
+    var input = document.getElementById("merchantSearch");
+    if (input){
+      input.addEventListener("input", function(){
+        state.merchantFilter = input.value;
+        applyMerchantFilter();
+      });
+      // The strip re-renders on every state change, so restore focus and caret if it was being typed in.
+      if (state.searchFocused){
+        input.focus();
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch (e) {}
+      }
+      input.addEventListener("focus", function(){ state.searchFocused = true; });
+      input.addEventListener("blur", function(){ state.searchFocused = false; });
+    }
+    var clear = document.getElementById("clearSearch");
+    if (clear) clear.addEventListener("click", function(){
+      state.merchantFilter = "";
+      renderDataStrip();
+      applyMerchantFilter();
+    });
+    Array.prototype.forEach.call(el.querySelectorAll("[data-theme-set]"), function(btn){
+      btn.addEventListener("click", function(){ setTheme(btn.getAttribute("data-theme-set")); });
+    });
+  }
+
+  function themeBtn(mode, label, paths){
+    return '<button type="button" data-theme-set="' + mode + '" title="' + label + '" aria-label="' + label +
+      '" aria-pressed="' + (state.theme === mode) + '">' + iconSvg(paths) + "</button>";
+  }
+
+  // Theme: "system" follows prefers-color-scheme, "light"/"dark" force it via the data-theme
+  // attribute the palette blocks key off. Remembered per browser only.
+  function setTheme(mode){
+    state.theme = mode;
+    if (mode === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", mode);
+    try { localStorage.setItem("payout-theme", mode); } catch (e) {}
+    renderDataStrip();
+  }
+
+  function initTheme(){
+    var saved = null;
+    try { saved = localStorage.getItem("payout-theme"); } catch (e) {}
+    setTheme(saved === "light" || saved === "dark" ? saved : "system");
+  }
+
+  // Merchant filter — a display filter over the rendered report rows only. It never changes any
+  // computed figure, the subtotals, the grand total or the export, which always cover every merchant.
+  function applyMerchantFilter(){
+    var q = norm(state.merchantFilter);
+    var body = els.payoutReportBody;
+    if (!body) return;
+    var table = body.querySelector("table.report-table");
+    if (!table) return;
+    var shown = 0, total = 0;
+    Array.prototype.forEach.call(table.querySelectorAll("tbody tr"), function(tr){
+      if (tr.className !== "") return; // section labels, subtotals and grand total always stay
+      total++;
+      var cells = tr.children;
+      var hay = norm((cells[1] ? cells[1].textContent : "") + (cells[2] ? cells[2].textContent : ""));
+      var hit = !q || hay.indexOf(q) !== -1;
+      tr.hidden = !hit;
+      if (hit) shown++;
+    });
+    var note = document.getElementById("filterNote");
+    if (note){
+      note.hidden = !q;
+      note.innerHTML = q
+        ? "Showing <strong>" + shown + "</strong> of " + total +
+          " merchant lines matching “" + escapeHtml(state.merchantFilter) + "”. " +
+          "Subtotals, the grand total and the Excel export always cover every merchant."
+        : "";
+    }
   }
 
   function renderMasterFileList(){
@@ -2447,6 +2598,7 @@
     state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs, state.frequency);
     renderPayoutReport(state.payoutReport);
     renderDataStrip();
+    applyMerchantFilter();
   }
 
   els.generateReportBtn.addEventListener("click", function(){
@@ -2551,6 +2703,13 @@
       // Spans columns 1-3 as one sticky cell (used for section/subtotal/grand-total label rows).
       return '<td class="sticky-col sticky-col-1" style="left:0" colspan="3">' + html + "</td>";
     }
+
+    var filterNote = document.createElement("div");
+    filterNote.className = "banner sample";
+    filterNote.id = "filterNote";
+    filterNote.style.margin = "0 20px 12px";
+    filterNote.hidden = true;
+    body.appendChild(filterNote);
 
     var scroll = document.createElement("div");
     scroll.className = "table-scroll";
@@ -3068,6 +3227,7 @@
     if (t) showView(t.getAttribute("data-goto"));
   });
 
+  initTheme();
   showView("calculator");
   renderDataStrip();
   renderDashboardView(null);

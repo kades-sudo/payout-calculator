@@ -557,6 +557,66 @@ distributions unchanged; dashboard still reconciles with the report on every cat
 mismatches; **1,775 / 1,775** exported formulas evaluate to their cached values; no horizontal
 overflow at 1440px or 430px; no console errors.
 
+## Purple palette, theme toggle, merchant search, category bars
+
+**Audit status: PENDING VERIFICATION.** Presentation and one display-only filter — no calculation,
+lookup or export logic was touched.
+
+### Palette — whole app, both themes
+
+The accent moves from green to purple, **specifically so green can mean one thing only: "ok"**.
+Previously the brand colour and the success colour were both green, which is exactly the ambiguity you
+do not want on a screen where a failed reconciliation must be unmistakable.
+
+| | Light | Dark |
+|---|---|---|
+| bg / surface | `#F4F5FA` / `#FFFFFF` | `#14151C` / `#1C1E27` |
+| ink / muted | `#1A1B2E` / `#6B6E85` | `#ECEDF3` / `#A2A5B8` |
+| accent / soft | `#6341E8` / `#EDE9FE` | `#A794FF` / `#2A2450` |
+| ok · warn · danger | `#15803D` · `#B45309` · `#B91C1C` | `#5BE38B` · `#FBBF24` · `#FB8A8A` |
+
+Sidebar stays dark in both themes (`#1E2030`), with the active item now the accent purple rather than
+lime — one brand colour rather than two.
+
+**Every pair was checked programmatically for WCAG AA (>= 4.5:1)**: body text, muted text, accent text,
+the accent button label, and each status chip on its own soft background, in both themes, plus the
+sidebar. 26 pairs, **0 failures**. The first attempt failed on accent-on-accent-soft at 4.39:1 and the
+accent was darkened from `#6C4DF6` to `#6341E8`, which brings it to 5.12:1.
+
+### Theme toggle
+
+Three states — Light / Dark / Match system — in the header strip, remembered in `localStorage`.
+`system` removes the `data-theme` attribute and lets `prefers-color-scheme` decide.
+
+A pre-existing `:root[data-theme="dark"]` block carrying the **old green** palette was sitting after
+the new one and winning on source order, so forced dark silently kept the old colours. Removed.
+
+### Merchant search
+
+Filters the payout report rows by merchant name or MID, live. **It is display-only**: section labels,
+subtotals, the grand total and every exported figure always cover every merchant. A banner states this
+whenever a filter is active, so a filtered view can never be mistaken for a smaller payout run.
+
+### Payout share bars
+
+Nine payment categories as horizontal bars scaled to the largest, above the existing cards. Nine cards
+cannot be compared against each other at a glance; bars can, while the cards keep the exact figures.
+
+A donut was considered and rejected: nine categories with several at zero, and amounts that must be
+compared exactly (`35,820.41` vs `27,317.66`), is not what a donut communicates.
+
+### Verification
+
+Theme toggle across all three states with the accent and background token values read back from the
+DOM; search filtered to 2 rows on "MADHURA", 1 by MID, 0 on no match, 31 cleared, with subtotals and
+the grand total visible throughout; bar widths 100% / 76.3% / 9.4% matching the underlying amounts.
+Regression: sorting, numbering, transaction types, both classification columns, dashboard
+reconciliation (0 mismatched categories), sidebar and strip still fixed at every scroll depth,
+**1,775 / 1,775** exported formulas, no overflow at 1440px or 430px, no console errors.
+
+One bug found and fixed during the pass: the bar track and fill are `<span>`s, so `width` and `height`
+were being ignored until they were given `display:block`.
+
 ### Still open after this update
 
 - The dashboard still groups by `Card Type 2`; `DASHBOARD_REFERENCE_FIELD` can be switched to
