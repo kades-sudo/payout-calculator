@@ -1195,3 +1195,65 @@ flat sheet                          : 1,620 data rows, 41 distinct merchants, 0 
 
 Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, control total
 3,707 / 1,245,071.15.
+
+---
+
+## Drill-down that actually filters: one sheet per merchant
+
+**Audit status: PENDING VERIFICATION.** The hyperlink jumped to a row; it did not show only that
+merchant's transactions, which is what a drill-down means.
+
+### Why the previous approach could not filter
+
+A hyperlink navigates. It cannot change a filter's state — OOXML stores one static `<autoFilter>`
+per sheet, not a filter that responds to a click. So on a shared sheet, a link can only ever scroll
+you to a row with every other merchant still around it.
+
+The way to make a click produce a filtered view, without a macro, is to land on a sheet that
+contains nothing else. That is also exactly what Excel's PivotTable **Show Details** produces: a new
+sheet holding only the rows behind the figure. `buildMerchantSheets` prepares them up front.
+
+### What the export now contains
+
+```
+DAILY PAYOUT | Merchant Details | Process Raw Details | <one sheet per merchant>
+```
+
+Each merchant sheet carries a title row naming merchant, MID, Merchant Key, Account Code and
+transaction count — itself a **back-link to the payout report** — then a header row, then only that
+merchant's transactions. Header frozen at row 2, AutoFilter on the header so the merchant's own rows
+can still be sliced further.
+
+Sheet names are sanitised to Excel's rules: 31 characters, none of `: \ / ? * [ ]`, and de-duplicated
+with a numeric suffix. 11 merchant names in the sample exceed the cap and are truncated.
+
+### Verification
+
+```
+total sheets                        : 44   (3 + 41 merchants)
+sheet names unique                  : 44 of 44,  longest 31 chars
+report hyperlinks                   : 41,  0 broken, 0 landing on a mixed sheet
+hyperlinks workbook-wide            : 82   (41 forward + 41 back-links), 0 unresolvable
+sheets with a frozen pane           : 44 of 44
+sheets with an AutoFilter           : 43 of 44   (the report itself correctly has none)
+```
+
+Panes are right per sheet type:
+
+```
+DAILY PAYOUT           <pane xSplit="3" .../>   columns
+Merchant Details       <pane ySplit="1" .../>   header row
+merchant sheet         <pane ySplit="2" .../>   title + header
+```
+
+OOXML validated directly: 53 parts, 0 malformed; 44 sheets declared in `workbook.xml` with 44
+worksheet content-type overrides and 0 missing parts; `sheetViews` ahead of `sheetData` on every
+sheet.
+
+`NEW BALANCE DOHA` — the shared-MID case, that MID carrying ten merchants — gets a sheet with its
+**33 rows and no other merchant**, AutoFilter `A2:V35`.
+
+File size 4.12 MB -> 7.63 MB for the extra sheets.
+
+Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, control total
+3,707 / 1,245,071.15.
