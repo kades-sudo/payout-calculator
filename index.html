@@ -1271,8 +1271,42 @@
     return rows.reduce(function(n, r){ return n + (txnClass(r.transactionType) === "refunddispute" ? 1 : 0); }, 0);
   }
 
-  function computePaymentGroupCell(rows, masterEntry, pg, isBelow, bankCostIndex){
-    var groupRows = rows.filter(function(r){ return norm(r.cardType2) === norm(pg.name); });
+  // ---- Wallet split ----
+  // A transaction's section comes from its Wallet Classification, not Card Type 2, because a wallet
+  // transaction may be priced differently from the same card outside a wallet.
+  //
+  // Wallet labels follow the convention "<base> WALLET" (DEBIT CARD WALLET, CREDIT CARD WALLET,
+  // HIMYAN WALLET). Stripping that suffix gives the Card_Types section the row belongs to, and its
+  // presence is what marks the row as a wallet row. So one section holds both — the card rows and
+  // the wallet rows — and they are separated by ROW rather than by adding more columns.
+  function splitWalletLabel(value){
+    var n = norm(value);
+    if (/wallet$/.test(n) && n.length > "wallet".length) return { base: n.replace(/wallet$/, ""), isWallet: true };
+    return { base: n, isWallet: false };
+  }
+
+  // Wallet rows are priced from a single pair of columns shared by every wallet type, rather than
+  // per-scheme ones: Master_List "Wallet MerchantRate" and Bank_Cost "Wallet".
+  var WALLET_RATE_CANDIDATES = ["walletmerchantrate", "walletrate", "walletmerchrate"];
+  var WALLET_COST_CANDIDATES = ["wallet", "walletcost", "walletbankcost"];
+
+  function pickByCandidates(obj, candidates){
+    if (!obj) return undefined;
+    var keys = Object.keys(obj);
+    for (var i = 0; i < candidates.length; i++){
+      for (var k = 0; k < keys.length; k++){
+        if (norm(keys[k]) === candidates[i]) return obj[keys[k]];
+      }
+    }
+    return undefined;
+  }
+
+  function computePaymentGroupCell(rows, masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled){
+    var groupRows = rows.filter(function(r){
+      if (!walletEnabled) return norm(r.cardType2) === norm(pg.name);
+      var split = splitWalletLabel(r.walletClassification);
+      return split.base === norm(pg.name) && split.isWallet === !!isWallet;
+    });
     var saleRows = groupRows.filter(function(r){ return txnClass(r.transactionType) === "sale"; });
 
     var gross = round2(sumBy(saleRows, function(r){ return toNumber(r.grossAmount); }));
@@ -1286,9 +1320,16 @@
       return Math.abs(toNumber(r.grossAmount));
     }));
 
-    var merchantRate = masterEntry && pg.masterListRateColumn ? toRate(getByNormalizedKey(masterEntry.raw, pg.masterListRateColumn)) : 0;
     var bankCostRow = masterEntry ? bankCostIndex.get(norm(masterEntry.costId)) : null;
-    var bankRate = bankCostRow && pg.costTableColumn ? toRate(getByNormalizedKey(bankCostRow, pg.costTableColumn)) : 0;
+    var merchantRate, bankRate;
+    if (isWallet){
+      // Every wallet type shares one merchant rate and one bank cost, whatever card is underneath.
+      merchantRate = toRate(pickByCandidates(masterEntry ? masterEntry.raw : null, WALLET_RATE_CANDIDATES));
+      bankRate = toRate(pickByCandidates(bankCostRow, WALLET_COST_CANDIDATES));
+    } else {
+      merchantRate = masterEntry && pg.masterListRateColumn ? toRate(getByNormalizedKey(masterEntry.raw, pg.masterListRateColumn)) : 0;
+      bankRate = bankCostRow && pg.costTableColumn ? toRate(getByNormalizedKey(bankCostRow, pg.costTableColumn)) : 0;
+    }
 
     var bankFee = round2(gross * bankRate);
     var noqoodyCharge = round2(gross * merchantRate);
@@ -1304,10 +1345,12 @@
     };
   }
 
-  function buildMerchantLine(g, rows, isBelow, threshold, bankCostIndex, paymentGroups, manualInputs){
-    var id = norm(g.mid) + "|" + norm(g.merchantKey) + (isBelow ? "|below" : "|main");
+  function buildMerchantLine(g, rows, opts, bankCostIndex, paymentGroups, manualInputs){
+    var isBelow = !!opts.isBelow, isWallet = !!opts.isWallet, isPrimary = !!opts.isPrimary;
+    var threshold = opts.threshold, walletEnabled = !!opts.walletEnabled;
+    var id = norm(g.mid) + "|" + norm(g.merchantKey) + (isWallet ? "|wallet" : "|card") + (isBelow ? "|below" : "|main");
     var groups = paymentGroups.map(function(pg){
-      return computePaymentGroupCell(rows, g.masterEntry, pg, isBelow, bankCostIndex);
+      return computePaymentGroupCell(rows, g.masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled);
     });
     var totalProfit = round2(sumBy(groups, function(c){ return c.profit; }));
     var totalBankFee = round2(sumBy(groups, function(c){ return c.bankFee; }));
@@ -1324,10 +1367,13 @@
     // so the Below Amount split (gross < threshold) puts every one of them on the below line, where
     // the gain is always zero. Counting per line would silently drop the charge for any merchant
     // that has a Below Amount Rule.
+    // Gain For Bank Charges and the Payout Processing Fee apply ONCE per merchant. With up to four
+    // rows (card main/below, wallet main/below) they sit on the merchant's first row, whichever that
+    // is — so a merchant with only wallet activity still gets them.
     var refundDisputeCount = countRefundDispute(g.rows);
     var baseGain = g.masterEntry ? toNumber(g.masterEntry.gainForBankCharge) : 0;
-    var gain = isBelow ? 0 : round2(baseGain + GAIN_PER_REFUND_DISPUTE * refundDisputeCount);
-    var fee = (!isBelow && g.masterEntry) ? g.masterEntry.payoutProcessingFee : 0;
+    var gain = isPrimary ? round2(baseGain + GAIN_PER_REFUND_DISPUTE * refundDisputeCount) : 0;
+    var fee = (isPrimary && g.masterEntry) ? g.masterEntry.payoutProcessingFee : 0;
 
     var bankDifference = round2(totalBankFee - actualBankCharges);
     var deductedRentOthers = round2(totalInternalTransfer - manual.rent - gain);
@@ -1340,11 +1386,13 @@
       merchantKey: g.merchantKey,
       accountCode: g.accountCode,
       merchantName: g.merchantName,
-      label: g.merchantName + (isBelow ? " | BELOW " + threshold : ""),
+      label: g.merchantName + (isWallet ? " | WALLET" : "") + (isBelow ? " | BELOW " + threshold : ""),
       isBelow: isBelow,
+      isWallet: isWallet,
+      isPrimary: isPrimary,
       txnCount: rows.length,
-      refundDisputeCount: isBelow ? 0 : refundDisputeCount,
-      baseGainForBankCharge: isBelow ? 0 : round2(baseGain),
+      refundDisputeCount: isPrimary ? refundDisputeCount : 0,
+      baseGainForBankCharge: isPrimary ? round2(baseGain) : 0,
       groups: groups,
       totalProfit: totalProfit,
       totalBankFee: totalBankFee,
@@ -1357,13 +1405,13 @@
       deductedRent: deductedRent,
       payoutProcessingFee: fee,
       merchantPayout: merchantPayout,
-      portalAmount: isBelow ? null : manual.portalAmount,
+      portalAmount: isPrimary ? manual.portalAmount : null,
       totalTransfer: null,
       difference: null
     };
   }
 
-  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency){
+  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency, walletConfigured){
     var merchantGroups = new Map();
     processed.forEach(function(row){
       if (!row.merchantMatched) return;
@@ -1402,19 +1450,43 @@
     var sortedGroups = Array.from(merchantGroups.values()).sort(function(a, b){
       return String(a.merchantName || "").localeCompare(String(b.merchantName || ""), undefined, { sensitivity: "base" });
     });
+    // A merchant produces up to FOUR rows: card main, card below, wallet main, wallet below.
+    // The wallet split comes first (it decides which rate applies), then the Below Amount split
+    // inside each. Rows with no transactions are skipped, so a merchant with no wallet activity and
+    // no below-threshold transactions still produces exactly one row, as before.
+    //
+    // Splitting by row rather than by adding wallet columns keeps the report the same width — three
+    // extra column sections would have pushed it past 130 columns of horizontal scrolling.
     sortedGroups.forEach(function(g){
       var threshold = g.masterEntry ? g.masterEntry.belowAmountRule : 0;
-      var mainRows = threshold > 0 ? g.rows.filter(function(r){ return toNumber(r.grossAmount) >= threshold; }) : g.rows;
-      var belowRows = threshold > 0 ? g.rows.filter(function(r){ return toNumber(r.grossAmount) < threshold; }) : [];
+      var cardRows = [], walletRows = [];
+      g.rows.forEach(function(r){
+        var isW = walletConfigured && splitWalletLabel(r.walletClassification).isWallet;
+        (isW ? walletRows : cardRows).push(r);
+      });
 
-      var mainLine = buildMerchantLine(g, mainRows, false, threshold, bankCostIndex, paymentGroups, manualInputs);
-      var belowLine = belowRows.length ? buildMerchantLine(g, belowRows, true, threshold, bankCostIndex, paymentGroups, manualInputs) : null;
+      var lines = [];
+      [{ rows: cardRows, isWallet: false }, { rows: walletRows, isWallet: true }].forEach(function(part){
+        if (!part.rows.length) return;
+        var mainRows = threshold > 0 ? part.rows.filter(function(r){ return toNumber(r.grossAmount) >= threshold; }) : part.rows;
+        var belowRows = threshold > 0 ? part.rows.filter(function(r){ return toNumber(r.grossAmount) < threshold; }) : [];
+        if (mainRows.length) lines.push({ rows: mainRows, isWallet: part.isWallet, isBelow: false });
+        if (belowRows.length) lines.push({ rows: belowRows, isWallet: part.isWallet, isBelow: true });
+      });
+      // A merchant that resolved but has no usable rows at all still gets one line, so it is visible.
+      if (!lines.length) lines.push({ rows: [], isWallet: false, isBelow: false });
 
-      mainLine.totalTransfer = round2(mainLine.merchantPayout + (belowLine ? belowLine.merchantPayout : 0));
-      mainLine.difference = round2(mainLine.totalTransfer - mainLine.portalAmount);
+      var built = lines.map(function(spec, i){
+        return buildMerchantLine(g, spec.rows, {
+          isBelow: spec.isBelow, isWallet: spec.isWallet, isPrimary: i === 0,
+          threshold: threshold, walletEnabled: walletConfigured
+        }, bankCostIndex, paymentGroups, manualInputs);
+      });
 
-      merchantLines.push(mainLine);
-      if (belowLine) merchantLines.push(belowLine);
+      // Total Transfer sums every row of the merchant and sits on the first one.
+      built[0].totalTransfer = round2(sumBy(built, function(l){ return l.merchantPayout; }));
+      built[0].difference = round2(built[0].totalTransfer - built[0].portalAmount);
+      built.forEach(function(l){ merchantLines.push(l); });
     });
 
     // A Card Type 2 present in the data but matching no Card_Types row has no section to be
@@ -1435,8 +1507,11 @@
           var t = String(r.transactionType === undefined || r.transactionType === null ? "" : r.transactionType).trim() || "(blank)";
           unknownTxnTypeMap.set(t, (unknownTxnTypeMap.get(t) || 0) + 1);
         }
-        if (configuredGroupKeys[norm(r.cardType2)]) return;
-        var label = String(r.cardType2 === undefined || r.cardType2 === null ? "" : r.cardType2).trim() || "(blank Card Type 2)";
+        var sectionKey = walletConfigured ? splitWalletLabel(r.walletClassification).base : norm(r.cardType2);
+        if (configuredGroupKeys[sectionKey]) return;
+        var raw = walletConfigured ? r.walletClassification : r.cardType2;
+        var label = String(raw === undefined || raw === null ? "" : raw).trim() ||
+          (walletConfigured ? "(blank Wallet Classification)" : "(blank Card Type 2)");
         var entry = otherCardTypeMap.get(label) || { label: label, txnCount: 0, clearedTxn: 0, gross: 0 };
         entry.txnCount += 1;
         if (cls === "sale"){
@@ -1462,12 +1537,13 @@
       return String(a).localeCompare(String(b));
     });
 
-    // "No." identifies a merchant, not a row: it advances once per merchant and a below-threshold
-    // row carries the same number as the main row it belongs to.
+    // "No." identifies a merchant, not a row: it advances once per merchant. Every continuation row
+    // the merchant produces — below, wallet, wallet-below — carries the same number, and only the
+    // first row of the block actually prints it.
     byAccountCode.forEach(function(lines){
       var no = 0;
       lines.forEach(function(line){
-        if (!line.isBelow) no++;
+        if (line.isPrimary) no++;
         line.no = no;
       });
     });
@@ -1524,6 +1600,10 @@
       grandTotal: grandTotal,
       unresolvedCount: unresolvedCount,
       excludedByFrequencyCount: excludedByFrequencyCount,
+      walletConfigured: !!walletConfigured,
+      walletSections: paymentGroups.map(function(pg, i){
+        return merchantLines.some(function(l){ return l.isWallet && l.groups[i].txnCount > 0; });
+      }),
       otherCardTypes: otherCardTypes,
       unknownTxnTypes: unknownTxnTypes,
       reportedSaleTxnCount: reportedSaleTxnCount,
@@ -2079,10 +2159,12 @@
     if (!table) return;
     var shown = 0, total = 0;
     Array.prototype.forEach.call(table.querySelectorAll("tbody tr"), function(tr){
-      if (tr.className !== "") return; // section labels, subtotals and grand total always stay
+      // Data rows are the plain ones and the wallet rows; section labels, subtotals and the grand
+      // total always stay visible so a filtered view still shows what it is a subset of.
+      if (tr.className !== "" && tr.className !== "wallet-row") return;
       total++;
       var cells = tr.children;
-      var hay = norm((cells[1] ? cells[1].textContent : "") + (cells[2] ? cells[2].textContent : ""));
+      var hay = norm((tr.dataset.mid || "") + (cells[2] ? cells[2].textContent : ""));
       var hit = !q || hay.indexOf(q) !== -1;
       tr.hidden = !hit;
       if (hit) shown++;
@@ -2595,7 +2677,8 @@
   function recomputeAndRenderPayoutReport(){
     var bankCostIndex = buildBankCostIndex(state.bankCostRows);
     var paymentGroups = buildPaymentGroups(state.cardTypesRows);
-    state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs, state.frequency);
+    state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs,
+                                             state.frequency, !!(state.result && state.result.walletConfigured));
     renderPayoutReport(state.payoutReport);
     renderDataStrip();
     applyMerchantFilter();
@@ -2720,7 +2803,10 @@
     var groupRow = document.createElement("tr");
     groupRow.className = "group-row";
     groupRow.innerHTML = stickyTh("", 0) + stickyTh("", 1) + stickyTh("", 2) +
-      report.paymentGroups.map(function(pg){ return '<th colspan="' + GROUP_SUBCOLS.length + '">' + escapeHtml(pg.name.toUpperCase()) + "</th>"; }).join("") +
+      report.paymentGroups.map(function(pg, i){
+        var name = pg.name.toUpperCase() + (report.walletSections && report.walletSections[i] ? " / WALLET" : "");
+        return '<th colspan="' + GROUP_SUBCOLS.length + '">' + escapeHtml(name) + "</th>";
+      }).join("") +
       '<th colspan="' + RECON_COLS.length + '">FINAL RECONCILIATION</th>' +
       '<th colspan="' + FINAL_COLS.length + '">TRANSFER</th>';
     thead.appendChild(groupRow);
@@ -2745,9 +2831,13 @@
 
       group.lines.forEach(function(line){
         var tr = document.createElement("tr");
+        if (line.isWallet) tr.className = "wallet-row";
+        // The MID cell is blank on continuation rows, so carry it here — otherwise searching a MID
+        // would match only the merchant's first row instead of its whole block.
+        tr.dataset.mid = line.mid;
         tr.innerHTML =
-          stickyTd(String(line.no), 0) +
-          stickyTd(escapeHtml(line.mid), 1) +
+          stickyTd(line.isPrimary ? String(line.no) : "", 0) +
+          stickyTd(line.isPrimary ? escapeHtml(line.mid) : "", 1) +
           stickyTd(escapeHtml(line.label), 2) +
           groupCellsHtml(line.groups, false) +
           reconRow(line.label, line, false);
@@ -2912,8 +3002,8 @@
 
     function buildGroupHeaderRow(){
       var row = ["", "", ""];
-      report.paymentGroups.forEach(function(pg){
-        row.push(pg.name.toUpperCase());
+      report.paymentGroups.forEach(function(pg, gi){
+        row.push(pg.name.toUpperCase() + (report.walletSections && report.walletSections[gi] ? " / WALLET" : ""));
         for (var i = 1; i < GROUP_SUBCOLS.length; i++) row.push("");
         row.push(SPACER);
       });
@@ -2979,11 +3069,14 @@
       colHeaderRowIdxs.push(colHeaderRowIdx);
 
       var sectionDataRows = [];
-      var mainRowSpans = []; // {mainRowIdx, lastRowIdx} — a merchant's main row plus its below-threshold row
+      // One span per merchant, covering every row it produced (card main/below, wallet main/below).
+      // No. and MID are written on the merchant's first row only; continuation rows leave them blank
+      // so the block reads as a single merchant rather than four repeated lines.
+      var mainRowSpans = []; // {mainRowIdx, lastRowIdx}
       group.lines.forEach(function(line){
-        var idx = pushRow(lineToRow([line.no, line.mid, line.label], line.groups, line), 1);
+        var idx = pushRow(lineToRow([line.isPrimary ? line.no : "", line.isPrimary ? line.mid : "", line.label], line.groups, line), 1);
         sectionDataRows.push(idx);
-        if (line.isBelow && mainRowSpans.length) mainRowSpans[mainRowSpans.length - 1].lastRowIdx = idx;
+        if (!line.isPrimary && mainRowSpans.length) mainRowSpans[mainRowSpans.length - 1].lastRowIdx = idx;
         else mainRowSpans.push({ mainRowIdx: idx, lastRowIdx: idx });
       });
       var subRowIdx = pushRow(lineToRow(["SUBTOTAL — Account Code " + group.accountCode, "", ""], group.subtotal.groups, group.subtotal), 0);

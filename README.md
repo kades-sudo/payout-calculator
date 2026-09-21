@@ -617,6 +617,77 @@ reconciliation (0 mismatched categories), sidebar and strip still fixed at every
 One bug found and fixed during the pass: the bar track and fill are `<span>`s, so `width` and `height`
 were being ignored until they were given `display:block`.
 
+## Wallet rows: section grouping moves to Wallet Classification
+
+**Audit status: PENDING VERIFICATION.** This changes payout amounts — see the impact below.
+
+### The rule
+
+A transaction's report section now comes from its **Wallet Classification**, not Card Type 2, because
+a wallet transaction can be priced differently from the same card outside a wallet. Classification was
+considered and rejected: it folds `CREDIT CARD WALLET` into `CREDIT CARD`, which would bill those
+transactions at the credit rate.
+
+**The split is by ROW, not by column.** Three extra column sections would have pushed the report past
+130 columns of horizontal scrolling. Instead each section header becomes `CREDIT CARD / WALLET` and
+holds both, with the row saying which.
+
+Wallet labels follow the convention `<base> WALLET`. Stripping that suffix gives the `Card_Types`
+section the row belongs to, and its presence marks the row as a wallet row.
+
+### Row model
+
+A merchant now produces up to **four** rows — the wallet split happens first (it decides the rate),
+then the Below Amount split inside each. Empty combinations are skipped:
+
+    MADHURA RESTAURANT | BELOW 25          <- card, below   (no card transactions >= 25)
+    MADHURA RESTAURANT | WALLET
+    MADHURA RESTAURANT | WALLET | BELOW 25
+    NEW BALANCE DOHA                       <- one row only: no wallet, no below
+
+`No.` and `MID` print **only on the merchant's first row**; continuation rows leave both blank so the
+block reads as one merchant. `No.` advances once per merchant (on `isPrimary`, not on `!isBelow` —
+otherwise wallet main rows would each consume a number).
+
+**Gain For Bank Charges and Payout Processing Fee apply once per merchant, on its first row** —
+whichever that is, so a merchant with only wallet activity still receives them. `Total Transfer` sums
+every row of the merchant and sits on that same first row.
+
+### Rates
+
+| Row type | Merchant rate | Bank cost |
+|---|---|---|
+| Card | `Card_Types.Master List Rate Column` (per scheme) | `Card_Types.Cost Table Column` (per scheme) |
+| Wallet | `Wallet MerchantRate` (one shared column) | `Wallet` (one shared column) |
+
+One wallet rate and one wallet cost serve every wallet type, whatever card is underneath. Column names
+are resolved by candidate list, so `Wallet Rate` / `Wallet MerchantRate` both work.
+
+### Impact on the supplied data
+
+Grouping on Wallet Classification moves 490 Sale transactions (QAR 21,663 gross) onto the wallet rate.
+Total Noqoody Profit moves from **−208.96 to −21.31** on the Daily batch, and merchant Internal
+Transfer falls correspondingly. This is a pricing change, not a cosmetic one.
+
+### Verification
+
+**98 of 98 rendered rate pairs** match the Masterlist — card rows on their per-scheme columns, wallet
+rows on the shared wallet columns — checked merchant by merchant, section by section.
+
+*(That check first reported 3 mismatches, which turned out to be the test keying on merchant name:
+two different merchants are both called `NEW BALANCE DOHA`, with MIDs `100005269900113` and
+`777100432320320` and Cost IDs 1 and 7. The app keys on MID + Merchant Key and was correct.)*
+
+Dashboard reconciliation across all 55 rows: every category and all three headline figures agree with
+the independently re-summed rows **and** the grand-total row, 0 mismatches. Export: **2,903 / 2,903**
+formulas evaluate to their cached values; section banners read `CREDIT CARD / WALLET`; lead columns
+blank on continuation rows; `Total Transfer` spans the whole merchant block (`SUM(DF4:DF6)` for a
+three-row merchant, `SUM(DF7:DF8)` for a two-row one).
+
+Two bugs were found and fixed during the pass: the merchant filter skipped wallet rows entirely, and
+searching by MID matched only a merchant's first row, since the MID cell is now blank on continuation
+rows — the MID is carried on every row in a data attribute for that reason.
+
 ### Still open after this update
 
 - The dashboard still groups by `Card Type 2`; `DASHBOARD_REFERENCE_FIELD` can be switched to
