@@ -1523,3 +1523,57 @@ said three merchants were priced from it. Display only — no figure was ever af
 the code being committed. The count on the current export is **3,264**. Re-run against the real
 file, everything passes — but the earlier claims overstated what had been checked. The script now
 selects the most recently written export, so it cannot silently go stale again.
+
+---
+
+## Reconciliation block: left-to-right across the FINAL RECONCILIATION columns
+
+**Audit status: PENDING VERIFICATION.** Replaces the vertical column-D layout with the horizontal
+one the user builds by hand, matching the reference workbook cell for cell.
+
+### Layout, as exported
+
+Three rows under each Account Code subtotal (subtotal on row 9 in the sample):
+
+```
+row 10   BX "ACTUAL PROFIT NEEDS TO TAKE"        BY   0.14  =ROUND(BZ9-BY9,2)
+         BZ 121.95  =ROUND(BX9+CA9,2)            CB "BANK CHARGES DIFFERENCE | ACTUAL VS. BANK"
+         CF 15,882.48  =ROUND(CE9,2)             CG "TOTAL INTERNAL TRANSFERS DEDUCTED ALL THE CHARGES"
+
+row 11   BX "ACTUAL PROFIT + NOQOODY GAIN..."    BZ 136.95  =ROUND(BZ10+CD9,2)
+         CE "AUDIT PORTAL TOTAL | MATCHING"      CF   0.00  (input)
+         CG 15,882.48  =ROUND(CF10-CF11,2)       CH "DIFFERENCE TO CONSIDER"
+
+row 12   BX "AUDIT PORTAL TOTAL | MATCHING"      BZ   0.00  (input)
+         CA 136.95  =ROUND(BZ11-BZ12,2)          CB "DIFFERENCE TO CONSIDER"
+```
+
+Same cells, same labels, same yellow highlight as the hand-built original.
+
+### Cleaned
+
+- The cell duplicating the bank-charges difference (`CA11` in the original) is gone.
+- `CE11 = CC10 - CC11`, which referenced an empty cell, is gone.
+- Every figure is `ROUND(...,2)`; the originals carried float noise (`0.12999999999999545`).
+- The two audit-portal cells carry the workbook's `input` styling and a consistent number format —
+  in the original they were the only cells without the QAR format, and looked like computed cells.
+- `Bank Difference` is already *(modelled - actual)*, so `ACTUAL PROFIT` adds it rather than
+  recomputing *(actual - modelled)* in a separate cell and subtracting: one cell instead of two.
+
+### Web view
+
+The same three rows render in the same columns, with the two portal figures editable per Account
+Code and flowing through to the export. Two display details were needed:
+
+- The block name sits in one sticky cell spanning the three lead columns, clipped to their width —
+  as a plain first cell it overflowed across the scrolled columns and covered its neighbour.
+- Label text is absolutely positioned so it spills across the empty cells to its right, the way
+  Excel renders an overflowing label. An HTML cell otherwise clips it to a numeric column's width.
+
+### Verification
+
+Six blocks, one per Account Code, in both the web report and the export. Formulas reference the
+correct subtotal row and chain within the block. 12 inputs rendered (two per block).
+
+Regression: 3,258/3,258 export formulas evaluate to their cached values, 107/107 rate pairs, 30
+merchants / 55 rows unchanged, 11 OOXML parts well-formed, control total 3,707 / 1,245,071.15.
