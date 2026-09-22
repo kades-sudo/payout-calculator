@@ -799,6 +799,7 @@
     costId: ["costid"],
     belowAmountRule: ["belowamountrule"],
     ratePerTrnx: ["ratepertrnx", "ratepertxn"],
+    refundFee: ["refundfee", "refundcharge", "refundfeepertxn"],
     txnFeeId: ["txnfeeid", "transactionfeeid", "feeid"],
     gainForBankCharge: ["noqoodygainforbankcharge", "gainforbankcharge", "noqoodygainforbankcharges"],
     payoutProcessingFee: ["payoutprocessingfee"],
@@ -1069,6 +1070,8 @@
         costId: resolver.costId ? row[resolver.costId] : "",
         belowAmountRule: toNumber(resolver.belowAmountRule ? row[resolver.belowAmountRule] : ""),
         ratePerTrnx: toNumber(resolver.ratePerTrnx ? row[resolver.ratePerTrnx] : ""),
+        // Blank and 0 both mean "this merchant has no refund fee" — only an explicit amount charges.
+        refundFee: toNumber(resolver.refundFee ? row[resolver.refundFee] : ""),
         txnFeeId: resolver.txnFeeId ? row[resolver.txnFeeId] : "",
         gainForBankCharge: toNumber(resolver.gainForBankCharge ? row[resolver.gainForBankCharge] : ""),
         payoutProcessingFee: toNumber(resolver.payoutProcessingFee ? row[resolver.payoutProcessingFee] : ""),
@@ -1343,33 +1346,35 @@
   // payout portal) that don't exist in any uploaded sheet — they're manual inputs, defaulting to 0.
   // Transaction Type handling:
   //   Sale              -> Gross Collection and Cleared Txn (the per-transaction charge base).
-  //   Refund / Dispute  -> ABS(Gross Amount) into Refund, and a flat GAIN_PER_REFUND_DISPUTE added
-  //                        to that merchant's Gain For Bank Charges (applied per merchant, in
-  //                        buildMerchantLine, not per payment group).
-  //   Reversal          -> never carries the flat gain, and only reaches the Refund column when its
-  //                        own Gross Amount is negative; a positive-gross Reversal contributes
-  //                        nothing at all.
+  //   Refund            -> ABS(Gross Amount) into Refund, and the merchant's Master_List Refund Fee
+  //                        added once per refund to Gain For Bank Charges (applied per merchant, in
+  //                        buildMerchantLine, not per payment group). A blank or zero Refund Fee
+  //                        means the merchant is not charged for refunds at all.
+  //   Dispute           -> ABS(Gross Amount) into Refund, but only when its own Gross Amount is
+  //                        negative. Never carries the refund fee.
+  //   Reversal          -> same as Dispute: negative-gross only, never charged.
   //   anything else     -> keeps the original behaviour (ABS into Refund) so no transaction is
   //                        silently dropped, and is surfaced in the UI as an unrecognised type
   //                        rather than being assumed to follow one of the rules above.
+  // Refund and Dispute are separate classes, not one. Only a Refund carries the merchant's refund
+  // fee; a Dispute reduces the payout but is never charged for. Both, like a Reversal, reach the
+  // Refund column only when their own Gross Amount is negative.
   function txnClass(transactionType){
     var k = norm(transactionType);
     if (k === "sale") return "sale";
-    if (k === "refund" || k === "dispute") return "refunddispute";
+    if (k === "refund") return "refund";
+    if (k === "dispute") return "dispute";
     if (k === "reversal") return "reversal";
     return "unknown";
   }
-  // Flat amount charged back to the merchant for each Refund/Dispute transaction. A business rule
-  // supplied directly, not derived from any uploaded sheet.
-  var GAIN_PER_REFUND_DISPUTE = 5;
 
   // Bank Difference = modelled Bank Fee - what the bank actually charged (OMS Commission). Anything
   // past a riyal is worth a look; sections contributing less than a tenth are rounding, not a cause.
   var BANK_DIFF_FLAG_THRESHOLD = 1;
   var BANK_DIFF_SECTION_MIN = 0.1;
 
-  function countRefundDispute(rows){
-    return rows.reduce(function(n, r){ return n + (txnClass(r.transactionType) === "refunddispute" ? 1 : 0); }, 0);
+  function countRefunds(rows){
+    return rows.reduce(function(n, r){ return n + (txnClass(r.transactionType) === "refund" ? 1 : 0); }, 0);
   }
 
   // ---- Wallet split ----
@@ -1440,8 +1445,9 @@
     var refund = round2(sumBy(groupRows, function(r){
       var cls = txnClass(r.transactionType);
       if (cls === "sale") return 0;
-      // A Reversal only reduces the payout when its own amount is negative.
-      if (cls === "reversal" && toNumber(r.grossAmount) >= 0) return 0;
+      // A Dispute or Reversal only reduces the payout when its own amount is negative; a positive
+      // one is not money going back to the cardholder and must not be deducted.
+      if ((cls === "dispute" || cls === "reversal") && toNumber(r.grossAmount) >= 0) return 0;
       return Math.abs(toNumber(r.grossAmount));
     }));
 
@@ -1504,9 +1510,10 @@
     // Gain For Bank Charges and the Payout Processing Fee apply ONCE per merchant. With up to four
     // rows (card main/below, wallet main/below) they sit on the merchant's first row, whichever that
     // is — so a merchant with only wallet activity still gets them.
-    var refundDisputeCount = countRefundDispute(g.rows);
+    var refundCount = countRefunds(g.rows);
+    var refundFee = g.masterEntry ? toNumber(g.masterEntry.refundFee) : 0;
     var baseGain = g.masterEntry ? toNumber(g.masterEntry.gainForBankCharge) : 0;
-    var gain = isPrimary ? round2(baseGain + GAIN_PER_REFUND_DISPUTE * refundDisputeCount) : 0;
+    var gain = isPrimary ? round2(baseGain + refundFee * refundCount) : 0;
     var fee = (isPrimary && g.masterEntry) ? g.masterEntry.payoutProcessingFee : 0;
 
     var bankDifference = round2(totalBankFee - actualBankCharges);
@@ -1540,7 +1547,7 @@
       isWallet: isWallet,
       isPrimary: isPrimary,
       txnCount: rows.length,
-      refundDisputeCount: isPrimary ? refundDisputeCount : 0,
+      refundCount: isPrimary ? refundCount : 0,
       baseGainForBankCharge: isPrimary ? round2(baseGain) : 0,
       groups: groups,
       totalProfit: totalProfit,
@@ -2036,8 +2043,8 @@
     if (report.unknownTxnTypes && report.unknownTxnTypes.length){
       html += '<div class="banner warn" style="margin:12px 0 0;"><strong>Unrecognised transaction type(s) found.</strong> ' +
         report.unknownTxnTypes.map(function(u){ return "<strong>" + escapeHtml(u.label) + "</strong> (" + fmtCount(u.count) + ")"; }).join(", ") +
-        ". No rule is defined for these, so each is counted as a transaction and its absolute amount is added to Refund — the original behaviour — but none receives the flat " +
-        fmtAmount(GAIN_PER_REFUND_DISPUTE) + " Refund/Dispute charge. Confirm the correct handling before relying on these rows.</div>";
+        ". No rule is defined for these, so each is counted as a transaction and its absolute amount is added to Refund — the original behaviour — but none attracts a refund fee. " +
+        "Confirm the correct handling before relying on these rows.</div>";
     }
 
     return html;

@@ -1312,3 +1312,70 @@ OOXML                         : 11 parts, all well-formed
 
 Regression: 107/107 rate pairs, 1,726/1,726 export formulas, row shape unchanged, control total
 3,707 / 1,245,071.15.
+
+---
+
+## Refund fee moves to Master_List; Dispute is no longer charged
+
+**Audit status: PENDING VERIFICATION.**
+
+### The rule, as confirmed
+
+| Transaction type | Into the Refund column | Fee |
+|---|---|---|
+| Sale | no (it is Gross Collection) | no |
+| **Refund** | ABS(Gross Amount), always | the merchant's **Refund Fee**, once per refund |
+| **Dispute** | ABS(Gross Amount) **only when gross is negative** | **none** |
+| **Reversal** | ABS(Gross Amount) only when gross is negative | none |
+
+A **blank or zero** `Refund Fee` both mean the merchant is not charged for refunds. Only an explicit
+amount charges.
+
+### Three defects this fixed
+
+1. **Dispute was charged as if it were a Refund.** `txnClass` mapped `refund` and `dispute` to one
+   class, and the fee applied to both. In the sample batch that was **90.00 over-charged** across 18
+   Disputes, with only 5.00 of the total legitimate.
+2. **The fee was hard-coded.** `GAIN_PER_REFUND_DISPUTE = 5` applied to every merchant, so a merchant
+   without a refund fee could not be represented at all. It now reads `Refund Fee` from Master_List
+   per merchant, and the constant is gone — no hard-coded money value remains in the calculation.
+3. **Dispute had no negative-gross guard.** Only Reversal was checked, so a positive-gross Dispute
+   would have reduced a payout. Every Dispute in the sample is negative, so nothing moved today, but
+   the guard now covers both.
+
+### Verification
+
+Against the uploaded Masterlist (`Refund Fee`: 59 merchants at 5, 4 at 0, 206 blank):
+
+```
+merchant                  freq     Ref  Disp   RefundFee  base   expected   exported
+AL SULTAN MEDICAL CENTER  Daily      0     1        5.00  0.00       0.00       0.00
+NEW BALANCE DOHA          Daily      1     0        5.00  4.00       9.00       9.00
+CUP TIME TRADING          (none)     0    13        0.00  0.00          — excluded, blank frequency
+ICE Q FOR ICE CREAM       (none)     0     4        0.00  0.00          — excluded, blank frequency
+```
+
+AL SULTAN previously showed **5.00** for a single Dispute and now correctly shows **0.00**.
+NEW BALANCE DOHA is the one genuine refund: base 4.00 + one refund at 5.00 = **9.00**.
+
+A stale `refundDisputeCount` reference survived the rename and was caught by the export test as a
+page error before anything shipped.
+
+Regression: 107/107 rate pairs, 1,726/1,726 export formulas, 30 merchants / 55 rows unchanged,
+Refund column unchanged at 1,213.00, control total 3,707 / 1,245,071.15.
+
+### Note on the uploaded Masterlist
+
+Every Bank_Cost row now reconciles to what the bank actually charged — Bank Difference flags went
+from 9 merchant lines / -262.72 to **zero**. The earlier "Cost ID 1 looks stale" finding was wrong
+in its diagnosis: Cost ID 1 was correct, and the luxury merchants simply belonged on new cost rows
+(8, 9, 10), which the user added.
+
+### Still open
+
+- 12 active merchants have a blank `Refund Fee` — the newly onboarded luxury group on Cost IDs 8
+  and 9. Under the confirmed rule they are not charged for refunds. Intentional or not yet filled in.
+- Terminal_Mapping rows 293 and 295 remain an exact duplicate.
+- 194 merchants still have a blank Payout Frequency and are excluded from every report.
+- Whether the Dispute change is a correction (past reports overstated) or a new rule is a business
+  decision and was not made here.
