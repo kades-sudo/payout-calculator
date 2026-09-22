@@ -1386,3 +1386,70 @@ force at the time. From this version onward, only Refunds carry a fee.
   and 9. Under the confirmed rule they are not charged for refunds. Intentional or not yet filled in.
 - Terminal_Mapping rows 293 and 295 remain an exact duplicate.
 - 194 merchants still have a blank Payout Frequency and are excluded from every report.
+
+---
+
+## Profit no longer absorbs refunds
+
+**Audit status: PENDING VERIFICATION.**
+
+### The defect
+
+```js
+profit = noqoodyCharge + noqoodyChargePerTxn - bankFee - refund
+```
+
+A Refund is the cardholder's money going back, not a Noqoody expense, so deducting it from profit
+made a section report a loss it never made:
+
+```
+NEW BALANCE DOHA | WALLET   bankFee 14.62   nqCharge 58.46   refund 329.00   profit -285.16
+AL SULTAN MEDICAL CENTER    bankFee 30.69   nqCharge 40.92   refund 185.00   profit -174.77
+```
+
+58.46 of revenue against 14.62 of bank cost is not a 285.16 loss.
+
+### The fix
+
+```js
+profit = noqoodyCharge + noqoodyChargePerTxn - bankFee
+```
+
+`Internal Transfer` is untouched and still deducts the refund, so the merchant is still paid net of
+it — the refund leaves the payout exactly once, in the column that represents money paid out.
+
+### A formula that was asked for and not implemented
+
+The requested wording was **`Bank Fee + Noqoody Charge - Noqoody Charge/Txn`**. Implemented
+literally that adds a cost as revenue and subtracts revenue as a cost. Measured before changing
+anything:
+
+```
+sections with activity                 : 129
+  of those, NO refund at all           : 127
+  that the literal formula changes     : 127
+
+whole-report total profit
+  as computed before                   :   2,889.36
+  refund removed                       :   3,403.36
+  the literal wording                  :  23,270.66
+  total Bank Fee across the report     :   9,962.65
+  difference between the two options   :  19,867.30   ( = 2 x Bank Fee )
+```
+
+The stated problem was refunds, yet the literal formula changes 127 sections that have no refund,
+and inflates profit eight-fold by exactly twice the bank fee. It was raised with the user with these
+figures rather than shipped; what the words described — removing the refund — was implemented.
+
+### Verification
+
+```
+NEW BALANCE DOHA | WALLET   profit -285.16 -> 43.84   Internal Transfer 2,535.54 (refund still deducted)
+AL SULTAN MEDICAL CENTER    profit -174.77 -> 10.23   Internal Transfer 3,866.04 (refund still deducted)
+
+sections where profit != nqCharge + chg/Txn - bankFee : 0 of 129
+whole-report total profit : 2,889.36 -> 3,403.36   (+514.00, the total refund)
+```
+
+Regression: 1,726/1,726 export formulas evaluate to their cached values with the changed profit
+formula, 107/107 rate pairs, 30 merchants / 55 rows unchanged, control total 3,707 / 1,245,071.15.

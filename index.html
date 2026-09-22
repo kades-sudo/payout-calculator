@@ -1475,7 +1475,11 @@
     var noqoodyCharge = round2(gross * merchantRate);
     var ratePerTxn = resolveRatePerTxn(masterEntry, pg, isBelow, isWallet, txnFeeIndex);
     var noqoodyChargePerTxn = round2(clearedTxn * ratePerTxn);
-    var profit = round2(noqoodyCharge + noqoodyChargePerTxn - bankFee - refund);
+    // Profit is Noqoody's own margin: what the merchant is charged, less what the bank charges us.
+    // A Refund is the cardholder's money going back, not a Noqoody expense — it is deducted from
+    // Internal Transfer (what the merchant is actually paid) and must not also be deducted here, or
+    // a section with a large refund reports a loss it never made.
+    var profit = round2(noqoodyCharge + noqoodyChargePerTxn - bankFee);
     var internalTransfer = round2(gross - noqoodyCharge - noqoodyChargePerTxn - refund);
 
     return {
@@ -3649,7 +3653,7 @@
           setFormula(r, groupCol(gi, "bankFee"), "ROUND(" + gross + "*" + ref(groupCol(gi, "bankRate"), r) + ",2)");
           setFormula(r, groupCol(gi, "noqoodyCharge"), "ROUND(" + gross + "*" + ref(groupCol(gi, "merchantRate"), r) + ",2)");
           setFormula(r, groupCol(gi, "chargePerTxn"), "ROUND(" + ref(groupCol(gi, "clearedTxn"), r) + "*" + ref(groupCol(gi, "ratePerTxn"), r) + ",2)");
-          setFormula(r, groupCol(gi, "profit"), "ROUND(" + charge + "+" + perTxn + "-" + bankFee + "-" + refund + ",2)");
+          setFormula(r, groupCol(gi, "profit"), "ROUND(" + charge + "+" + perTxn + "-" + bankFee + ",2)");
           setFormula(r, groupCol(gi, "internalTransfer"), "ROUND(" + gross + "-" + charge + "-" + perTxn + "-" + refund + ",2)");
           profitRefs.push(ref(groupCol(gi, "profit"), r));
           bankFeeRefs.push(bankFee);
