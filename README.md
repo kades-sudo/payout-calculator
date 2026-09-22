@@ -1453,3 +1453,73 @@ whole-report total profit : 2,889.36 -> 3,403.36   (+514.00, the total refund)
 
 Regression: 1,726/1,726 export formulas evaluate to their cached values with the changed profit
 formula, 107/107 rate pairs, 30 merchants / 55 rows unchanged, control total 3,707 / 1,245,071.15.
+
+---
+
+## Reconciliation block under every Account Code subtotal
+
+**Audit status: PENDING VERIFICATION.** Built from a hand-made block in a user-supplied export,
+reproduced as generated output. One block per Account Code subtotal, as requested.
+
+### What it computes
+
+```
+RECONCILIATION — Account Code 4
+  Bank charges difference (actual vs bank)      = actualBankCharges - totalBankFee
+  ACTUAL PROFIT                                 = totalProfit + bankDifference
+  Gain For Bank Charges                         = subtotal gain
+  ACTUAL PROFIT + GAIN                          = the two above
+  Audit portal profit                           [ input ]
+  Difference to consider                        = ACTUAL PROFIT + GAIN - portal profit
+  Total internal transfers, all charges deducted = subtotal Transfer Deducted (Rent, Others)
+  Audit portal total                            [ input ]
+  Difference to consider                        = transfers total - portal total
+```
+
+`Bank Difference` is already *(modelled − actual)*, so **adding** it applies the correction. The
+hand-built version computed *(actual − modelled)* in one cell and subtracted it in the next; this
+reuses a column the report already produces and needs one cell instead of two.
+
+### Fixes to the hand-built version
+
+- The duplicate cell (`CA11`, identical formula to `BY11`) is gone.
+- `CE11 = CC10 - CC11` referenced an empty cell; dropped.
+- Every figure is `ROUND(...,2)`. The hand-built cells were unrounded and carried float noise
+  (`0.12999999999999545`, `0.07999999999810825`), which would defeat any `=IF(x=0,...)` check.
+- Labels sit beside their values (label merged across A:C, figure in D) rather than two columns apart.
+- The block lives in the lead columns, not underneath the data grid, so adding merchants can never
+  collide with it — the structural flaw in the original.
+- The two audit-portal cells carry the workbook's `input` styling, so it is obvious which cells are
+  typed. They are also editable in the web app and flow through to the export.
+
+### Verification
+
+Six blocks, one per Account Code, in both the web report and the export. Formulas reference the
+correct subtotal row and chain within the block:
+
+```
+RECONCILIATION — Account Code 4      (subtotal on row 9)
+  Bank charges difference   0.14      =ROUND(BZ9-BY9,2)
+  ACTUAL PROFIT           121.95      =ROUND(BX9+CA9,2)
+  ACTUAL PROFIT + GAIN    136.95      =ROUND(D12+D13,2)
+  Audit portal profit       0.00      (value - INPUT)
+  Difference              136.95      =ROUND(D14-D15,2)
+```
+
+Typing 100 into the web app's portal profit moved the difference 136.95 -> 36.95.
+
+Regression: **3,264/3,264** export formulas evaluate to their cached values, 107/107 rate pairs,
+30 merchants / 55 rows unchanged, 11 OOXML parts well-formed, control total 3,707 / 1,245,071.15.
+
+### Two bugs found while doing this
+
+**`renderSheetChecks` always reported `Txn_Fee not found`.** Its `rowsById` map was never given a
+`txn_fee` entry when that sheet was added, so the panel contradicted the report, which correctly
+said three merchants were priced from it. Display only — no figure was ever affected. Fixed.
+
+**`verify-formulas.js` was validating a stale file.** It defaulted to a hard-coded
+`exported_Payout_Report_*.xlsx` from an earlier session rather than the newest capture, so the
+"1,726/1,726 formulas" reported in several recent entries was measured against an old export, not
+the code being committed. The count on the current export is **3,264**. Re-run against the real
+file, everything passes — but the earlier claims overstated what had been checked. The script now
+selects the most recently written export, so it cannot silently go stale again.

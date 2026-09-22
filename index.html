@@ -402,6 +402,22 @@
   .report-table .sticky-col-2{ width:130px; min-width:130px; max-width:130px; }
   .report-table .sticky-col-3{ width:190px; min-width:190px; max-width:190px; overflow:hidden; text-overflow:ellipsis; }
 
+  /* ---- Reconciliation block under each Account Code subtotal ---- */
+  .report-table tbody tr.recon-head td{
+    position:sticky; left:0; background:var(--accent-soft); color:var(--accent);
+    font-weight:700; font-size:11px; letter-spacing:.05em; text-transform:uppercase;
+    padding:7px 12px; border-top:2px solid var(--accent);
+  }
+  .report-table tbody tr.recon-row td{ background:var(--surface-2); border-bottom:1px solid var(--border); }
+  .report-table tbody tr.recon-row td.recon-label{
+    position:sticky; left:0; z-index:2; padding-left:22px; color:var(--ink-muted); white-space:nowrap;
+  }
+  .report-table tbody tr.recon-row td.recon-value{ font-weight:600; }
+  .report-table tbody tr.recon-strong td.recon-label{ color:var(--ink); font-weight:700; }
+  .report-table tbody tr.recon-strong td.recon-value{ font-weight:700; }
+  .report-table tbody tr.recon-gap td{ border-top:1px solid var(--border); }
+  .report-table tbody td.recon-diff{ color:var(--warn); background:var(--warn-soft) !important; }
+
   /* ---- Drill-down: a merchant's own transactions, opened from the report ---- */
   .report-table tbody tr.drillable{ cursor:pointer; }
   .drill-backdrop{
@@ -716,7 +732,8 @@
     isSample: false,
     result: null,             // {processed, unmatchedMerchants, unmatchedCardTypeCount}
     payoutReport: null,       // {merchantLines, accountCodeGroups, grandTotal, paymentGroups}
-    manualInputs: {}          // lineId -> {rent, portalAmount} — Actual Bank Charges is computed from OMS Commission
+    manualInputs: {},         // lineId -> {rent, portalAmount} — Actual Bank Charges is computed from OMS Commission
+    reconInputs: {}           // accountCode -> {portalProfit, portalTotal} — the audit portal figures
   };
 
   // Up to 7 configuration sheets, resolved by fuzzy name match (case/space/punctuation-insensitive).
@@ -1573,7 +1590,8 @@
     };
   }
 
-  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency, walletConfigured, txnFeeIndex){
+  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency, walletConfigured, txnFeeIndex, reconInputs){
+    reconInputs = reconInputs || {};
     var merchantGroups = new Map();
     processed.forEach(function(row){
       if (!row.merchantMatched) return;
@@ -1778,9 +1796,38 @@
       };
     }
 
+    // The reconciliation block that sits under each Account Code subtotal.
+    //
+    // Bank Difference is (what we modelled - what the bank actually took), so it is already the
+    // correction to apply: a bank that overcharged makes it negative and reduces actual profit.
+    // Adding it is the same arithmetic as subtracting (actual - modelled) and needs one cell
+    // rather than two.
+    //
+    // The two audit-portal figures are the only manual entries; everything else is derived.
+    function reconcileOf(code, subtotal){
+      var input = reconInputs[code] || {};
+      var portalProfit = toNumber(input.portalProfit);
+      var portalTotal = toNumber(input.portalTotal);
+      var actualProfit = round2(subtotal.totalProfit + subtotal.bankDifference);
+      var actualProfitPlusGain = round2(actualProfit + subtotal.gainForBankCharge);
+      var transfersTotal = subtotal.deductedRentOthers;
+      return {
+        bankChargesDifference: round2(subtotal.actualBankCharges - subtotal.totalBankFee),
+        actualProfit: actualProfit,
+        gainForBankCharge: subtotal.gainForBankCharge,
+        actualProfitPlusGain: actualProfitPlusGain,
+        portalProfit: portalProfit,
+        profitDifference: round2(actualProfitPlusGain - portalProfit),
+        transfersTotal: transfersTotal,
+        portalTotal: portalTotal,
+        transferDifference: round2(transfersTotal - portalTotal)
+      };
+    }
+
     var accountCodeGroups = accountCodes.map(function(code){
       var lines = byAccountCode.get(code);
-      return { accountCode: code, lines: lines, subtotal: subtotalOf(lines) };
+      var subtotal = subtotalOf(lines);
+      return { accountCode: code, lines: lines, subtotal: subtotal, reconcile: reconcileOf(code, subtotal) };
     });
     var grandTotal = subtotalOf(merchantLines);
     var unresolvedCount = sumBy(processed, function(r){ return r.merchantMatched ? 0 : 1; });
@@ -2542,7 +2589,8 @@
       special_rate: state.specialRateRows,
       card_types: state.cardTypesRows,
       prefix: state.prefixRows,
-      wallet_rules: state.walletRulesRows
+      wallet_rules: state.walletRulesRows,
+      txn_fee: state.txnFeeRows
     };
     els.sheetChecks.innerHTML = Object.keys(SHEET_LABELS).map(function(id){
       var rows = rowsById[id];
@@ -2669,6 +2717,7 @@
         renderDataStrip();
         state.payoutReport = null;
         state.manualInputs = {};
+        state.reconInputs = {};
         renderResults(result);
         els.payoutReportPanel.hidden = false;
         els.payoutReportBody.innerHTML = "";
@@ -3034,7 +3083,8 @@
     var paymentGroups = buildPaymentGroups(state.cardTypesRows);
     var txnFeeIndex = buildTxnFeeIndex(state.txnFeeRows);
     state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs,
-                                             state.frequency, !!(state.result && state.result.walletConfigured), txnFeeIndex);
+                                             state.frequency, !!(state.result && state.result.walletConfigured), txnFeeIndex,
+                                             state.reconInputs);
     renderPayoutReport(state.payoutReport);
     renderDataStrip();
     applyMerchantFilter();
@@ -3104,6 +3154,46 @@
       });
     });
     return html;
+  }
+
+  // Reconciliation block under one Account Code subtotal: label in the sticky column, figure beside
+  // it, so a label always sits next to the number it names. The two audit-portal figures are the
+  // only inputs; everything else is derived from the subtotal directly above.
+  function appendReconcileRows(tbody, group, totalCols){
+    var rec = group.reconcile;
+    if (!rec) return;
+    var code = String(group.accountCode);
+
+    function row(label, value, opts){
+      opts = opts || {};
+      var tr = document.createElement("tr");
+      tr.className = "recon-row" + (opts.strong ? " recon-strong" : "") + (opts.gap ? " recon-gap" : "");
+      var valueCell = opts.field
+        ? '<td class="num recon-value"><input type="number" step="0.01" class="report-input" ' +
+            'data-recon="' + escapeHtml(code) + '" data-field="' + opts.field + '" value="' + value + '"></td>'
+        : '<td class="num recon-value' + (opts.diff && Math.abs(value) >= 0.005 ? " recon-diff" : "") + '">' +
+            fmtAmount(value) + "</td>";
+      tr.innerHTML = '<td class="recon-label" colspan="3">' + escapeHtml(label) + "</td>" +
+                     valueCell +
+                     '<td colspan="' + Math.max(1, totalCols - 4) + '"></td>';
+      tbody.appendChild(tr);
+    }
+
+    var head = document.createElement("tr");
+    head.className = "recon-row recon-head";
+    head.innerHTML = '<td colspan="' + totalCols + '">RECONCILIATION — Account Code ' + escapeHtml(code) + "</td>";
+    tbody.appendChild(head);
+
+    row("Bank charges difference (actual vs bank)", rec.bankChargesDifference, {});
+    row("ACTUAL PROFIT", rec.actualProfit, { strong: true });
+    row("Gain For Bank Charges", rec.gainForBankCharge, {});
+    row("ACTUAL PROFIT + GAIN", rec.actualProfitPlusGain, { strong: true });
+    row("Audit portal profit", rec.portalProfit, { field: "portalProfit" });
+    row("Difference to consider", rec.profitDifference, { diff: true, strong: true });
+
+    row("Total internal transfers, all charges deducted", rec.transfersTotal, { gap: true, strong: true });
+    row("Audit portal total", rec.portalTotal, { field: "portalTotal" });
+    row("Difference to consider", rec.transferDifference, { diff: true, strong: true });
   }
 
   function renderPayoutReport(report){
@@ -3321,6 +3411,9 @@
         groupCellsHtml(group.subtotal.groups, true) +
         reconRow("", group.subtotal, true);
       tbody.appendChild(subTr);
+
+      // The reconciliation block for this Account Code, directly under its subtotal.
+      appendReconcileRows(tbody, group, totalCols);
     });
 
     var grandTr = document.createElement("tr");
@@ -3346,11 +3439,19 @@
 
     Array.prototype.forEach.call(body.querySelectorAll(".report-input"), function(input){
       input.addEventListener("change", function(){
-        var lineId = input.dataset.line;
         var field = input.dataset.field;
         var val = toNumber(input.value);
-        if (!state.manualInputs[lineId]) state.manualInputs[lineId] = { rent: 0, portalAmount: 0 };
-        state.manualInputs[lineId][field] = val;
+        // Two kinds of manual entry share this handler: per-merchant Rent / Portal Amount, and the
+        // per-Account-Code audit portal figures in the reconciliation block.
+        if (input.dataset.recon !== undefined){
+          var code = input.dataset.recon;
+          if (!state.reconInputs[code]) state.reconInputs[code] = { portalProfit: 0, portalTotal: 0 };
+          state.reconInputs[code][field] = val;
+        } else {
+          var lineId = input.dataset.line;
+          if (!state.manualInputs[lineId]) state.manualInputs[lineId] = { rent: 0, portalAmount: 0 };
+          state.manualInputs[lineId][field] = val;
+        }
         recomputeAndRenderPayoutReport();
       });
     });
@@ -3537,6 +3638,7 @@
 
     var groupHeaderRowIdxs = []; // the CARD TYPE / FINAL RECONCILIATION / TRANSFER banner rows
     var labelRowIdxs = [];       // the "Account Code N" section label rows
+    var reconBlocks = [];        // the per-Account-Code reconciliation blocks under each subtotal
     var subtotalRowIdxs = [];
 
     report.accountCodeGroups.forEach(function(group){
@@ -3571,6 +3673,33 @@
       var subRowIdx = pushRow(lineToRow(["SUBTOTAL — Account Code " + group.accountCode, "", ""], group.subtotal.groups, group.subtotal), 0);
       addMerge(subRowIdx, 0, 2);
       subtotalRowIdxs.push(subRowIdx);
+
+      // Reconciliation block for this Account Code, in the lead columns directly under its subtotal.
+      // Label in A (merged across the three sticky columns), figure in D, so a label always sits
+      // beside the number it names instead of two columns away from it.
+      var rec = group.reconcile || {};
+      var blockStart = pushRow(["RECONCILIATION — Account Code " + group.accountCode], 0);
+      addMerge(blockStart, 0, 2);
+      var reconLines = [
+        { label: "Bank charges difference (actual vs bank)", value: rec.bankChargesDifference, key: "bankChargesDifference" },
+        { label: "ACTUAL PROFIT", value: rec.actualProfit, key: "actualProfit", strong: true },
+        { label: "Gain For Bank Charges", value: rec.gainForBankCharge, key: "gainForBankCharge" },
+        { label: "ACTUAL PROFIT + GAIN", value: rec.actualProfitPlusGain, key: "actualProfitPlusGain", strong: true },
+        { label: "Audit portal profit", value: rec.portalProfit, key: "portalProfit", input: true },
+        { label: "Difference to consider", value: rec.profitDifference, key: "profitDifference", strong: true },
+        { label: "Total internal transfers, all charges deducted", value: rec.transfersTotal, key: "transfersTotal", strong: true },
+        { label: "Audit portal total", value: rec.portalTotal, key: "portalTotal", input: true },
+        { label: "Difference to consider", value: rec.transferDifference, key: "transferDifference", strong: true }
+      ];
+      var reconRowIdx = {};
+      reconLines.forEach(function(line){
+        var row = [line.label, "", "", line.value === undefined ? 0 : line.value];
+        var idx = pushRow(row, 0);
+        addMerge(idx, 0, 2);
+        reconRowIdx[line.key] = idx;
+      });
+      reconBlocks.push({ headerRowIdx: blockStart, rowIdx: reconRowIdx, subtotalRowIdx: subRowIdx, lines: reconLines });
+
       sections.push({ dataRows: sectionDataRows, mainRowSpans: mainRowSpans, subtotalRowIdx: subRowIdx });
     });
 
@@ -3760,6 +3889,40 @@
       for (var c = 0; c < totalExportCols; c++){
         styleBoldCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: c }));
       }
+    });
+
+    // Reconciliation blocks: live formulas pointing at the Account Code subtotal above, so editing
+    // an audit portal figure in Excel recomputes the difference. The two portal cells are the only
+    // values, and they carry the workbook's input styling so it is obvious which cells to type in.
+    var RECON_VALUE_COL = 3;
+    reconBlocks.forEach(function(block){
+      var sub = block.subtotalRowIdx;
+      var R = block.rowIdx;
+      function cell(rowIdx){ return ref(RECON_VALUE_COL, rowIdx); }
+      function put(key, formula){ setFormula(R[key], RECON_VALUE_COL, formula); }
+
+      put("bankChargesDifference", "ROUND(" + ref(reconCol("actualBankCharges"), sub) + "-" + ref(reconCol("totalBankFee"), sub) + ",2)");
+      // Bank Difference is already (modelled - actual), so adding it applies the correction.
+      put("actualProfit", "ROUND(" + ref(reconCol("totalProfit"), sub) + "+" + ref(reconCol("bankDifference"), sub) + ",2)");
+      put("gainForBankCharge", "ROUND(" + ref(reconCol("gain"), sub) + ",2)");
+      put("actualProfitPlusGain", "ROUND(" + cell(R.actualProfit) + "+" + cell(R.gainForBankCharge) + ",2)");
+      put("profitDifference", "ROUND(" + cell(R.actualProfitPlusGain) + "-" + cell(R.portalProfit) + ",2)");
+      put("transfersTotal", "ROUND(" + ref(reconCol("deductedRentOthers"), sub) + ",2)");
+      put("transferDifference", "ROUND(" + cell(R.transfersTotal) + "-" + cell(R.portalTotal) + ",2)");
+
+      // Header banner, labels, figures.
+      styleHeaderCell(reportSheet, XLSX.utils.encode_cell({ r: block.headerRowIdx, c: 0 }), "accent1Light");
+      block.lines.forEach(function(line){
+        var r = R[line.key];
+        var labelAddr = XLSX.utils.encode_cell({ r: r, c: 0 });
+        var valueAddr = cell(r);
+        if (line.strong){
+          styleBoldCell(reportSheet, labelAddr);
+          styleBoldCell(reportSheet, valueAddr);
+        }
+        if (line.input) styleCell(reportSheet, valueAddr, "input");
+        if (reportSheet[valueAddr]) reportSheet[valueAddr].z = XL_FMT_AMOUNT;
+      });
     });
 
     var prdSheet = buildProcessRawDetailsSheet(state.result.processed);
