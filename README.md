@@ -1371,11 +1371,18 @@ from 9 merchant lines / -262.72 to **zero**. The earlier "Cost ID 1 looks stale"
 in its diagnosis: Cost ID 1 was correct, and the luxury merchants simply belonged on new cost rows
 (8, 9, 10), which the user added.
 
+### Business decision on record: Dispute is a NEW RULE
+
+Confirmed by the user: not charging Disputes is a **new rule taking effect from now**, not a
+correction of past behaviour. **Reports issued before this change stand as issued** — they are not
+overstated, nothing needs regenerating, and no merchant is owed a refund of the fee.
+
+The 90.00 charged across 18 Disputes in the sample batch was therefore correct under the rule in
+force at the time. From this version onward, only Refunds carry a fee.
+
 ### Still open
 
 - 12 active merchants have a blank `Refund Fee` — the newly onboarded luxury group on Cost IDs 8
   and 9. Under the confirmed rule they are not charged for refunds. Intentional or not yet filled in.
 - Terminal_Mapping rows 293 and 295 remain an exact duplicate.
 - 194 merchants still have a blank Payout Frequency and are excluded from every report.
-- Whether the Dispute change is a correction (past reports overstated) or a new rule is a business
-  decision and was not made here.
