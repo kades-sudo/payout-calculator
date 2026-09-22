@@ -404,26 +404,22 @@
 
   /* ---- Reconciliation block under each Account Code subtotal ---- */
   .report-table tbody tr.recon-row td{ background:var(--surface-2); }
-  .report-table tbody tr.recon-first td{ border-top:2px solid var(--accent); }
-  .report-table tbody tr.recon-last td{ border-bottom:2px solid var(--accent); }
+  .report-table tbody tr.recon-head td{ border-top:2px solid #8064A2; }
+  .report-table tbody tr.recon-value td{ border-bottom:2px solid #8064A2; }
   .report-table tbody tr.recon-row td.recon-lead{
-    background:var(--accent-soft); color:var(--accent); z-index:3;
+    background:#8064A2; color:#FFFFFF; z-index:3;
     font-weight:700; font-size:10.5px; letter-spacing:.04em; text-transform:uppercase;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
     width:370px; min-width:370px; max-width:370px;
   }
-  .report-table tbody tr.recon-row td.recon-cell{
-    background:var(--warn-soft); color:var(--warn); font-weight:700; white-space:nowrap;
+  .report-table tbody tr.recon-value td.recon-lead{ background:#E4DFEC; color:#4A3A63; }
+  .report-table tbody tr.recon-row td.recon-head-cell{
+    background:#8064A2; color:#FFFFFF; font-weight:700; font-size:9.5px; line-height:1.25;
+    white-space:normal; overflow-wrap:break-word; vertical-align:middle; letter-spacing:.02em;
   }
-  .report-table tbody tr.recon-row td.recon-label-cell{
-    position:relative; font-size:10.5px; letter-spacing:.02em; overflow:visible;
-  }
-  .report-table tbody tr.recon-row td.recon-label-cell span{
-    position:absolute; left:12px; top:50%; transform:translateY(-50%);
-    white-space:nowrap; pointer-events:none;
-  }
-  .report-table tbody tr.recon-row td.recon-input{ background:var(--accent-soft); }
-  .report-table tbody tr.recon-row td.recon-input input{ background:var(--surface); }
+  .report-table tbody tr.recon-row td.recon-value-cell{ background:#E4DFEC; color:#31264A; font-weight:700; }
+  .report-table tbody tr.recon-row td.recon-input{ background:var(--warn-soft); }
+  .report-table tbody tr.recon-row td.recon-input input{ background:var(--surface); font-weight:600; }
 
   /* ---- Drill-down: a merchant's own transactions, opened from the report ---- */
   .report-table tbody tr.drillable{ cursor:pointer; }
@@ -1815,18 +1811,21 @@
       var input = reconInputs[code] || {};
       var portalProfit = toNumber(input.portalProfit);
       var portalTotal = toNumber(input.portalTotal);
-      var actualProfit = round2(subtotal.totalProfit + subtotal.bankDifference);
+      // Bank charges difference is (modelled - actual): negative when the bank took more than we
+      // modelled. Actual profit therefore ADDS it, so an overcharge reduces profit.
+      var bankChargesDifference = round2(subtotal.totalBankFee - subtotal.actualBankCharges);
+      var actualProfit = round2(subtotal.totalProfit + bankChargesDifference);
       var actualProfitPlusGain = round2(actualProfit + subtotal.gainForBankCharge);
       var transfersTotal = subtotal.deductedRentOthers;
       return {
-        bankChargesDifference: round2(subtotal.actualBankCharges - subtotal.totalBankFee),
         actualProfit: actualProfit,
-        gainForBankCharge: subtotal.gainForBankCharge,
         actualProfitPlusGain: actualProfitPlusGain,
         portalProfit: portalProfit,
         profitDifference: round2(actualProfitPlusGain - portalProfit),
-        transfersTotal: transfersTotal,
+        bankChargesDifference: bankChargesDifference,
+        rentTotal: subtotal.rent,
         portalTotal: portalTotal,
+        transfersTotal: transfersTotal,
         transferDifference: round2(transfersTotal - portalTotal)
       };
     }
@@ -3163,45 +3162,46 @@
     return html;
   }
 
-  // Reconciliation block under one Account Code subtotal, laid out across the FINAL RECONCILIATION
-  // columns so it lines up with the figures it derives from — the same arrangement built by hand in
-  // the reference workbook. Three rows; the two audit-portal cells are the only inputs.
+  // Reconciliation block under one Account Code subtotal: a header row and a figures row across the
+  // FINAL RECONCILIATION columns, matching the exported layout cell for cell.
   function appendReconcileRows(tbody, group, report){
     var rec = group.reconcile;
     if (!rec) return;
     var code = String(group.accountCode);
     var lead = 3;
-    var groupCols = report.paymentGroups.length * GROUP_SUBCOLS.length;
-    var reconStart = lead + groupCols;
+    var reconStart = lead + report.paymentGroups.length * GROUP_SUBCOLS.length;
     var total = reconStart + RECON_COLS.length + FINAL_COLS.length;
     function idx(key){ return reconStart + RECON_COLS.map(function(c){ return c.key; }).indexOf(key); }
 
-    var C = {
-      profit: idx("totalProfit"), bankCharges: idx("totalBankFee"), actualBank: idx("actualBankCharges"),
-      bankDiff: idx("bankDifference"), internal: idx("totalInternalTransfer"),
-      gain: idx("gainForBankCharge"), dedOthers: idx("deductedRentOthers"),
-      dedRent: idx("deductedRent"), payoutFee: idx("payoutProcessingFee"), merchantPayout: idx("merchantPayout")
-    };
+    var spec = [
+      { col: idx("totalProfit"),         head: "ACTUAL PROFIT NEEDS TO TAKE",                      value: rec.actualProfit },
+      { col: idx("totalBankFee"),        head: "ACTUAL PROFIT + NOQOODY GAIN FROM BANK CHARGES",   value: rec.actualProfitPlusGain },
+      { col: idx("actualBankCharges"),   head: "AUDIT PORTAL PROFIT | MATCHING",                   value: rec.portalProfit, field: "portalProfit" },
+      { col: idx("bankDifference"),      head: "DIFFERENCE TO CONSIDER",                           value: rec.profitDifference },
+      { col: idx("totalInternalTransfer"), head: "BANK CHARGES DIFFERENCE | ACTUAL VS. BANK",      value: rec.bankChargesDifference },
+      { col: idx("rent"),                head: "RENT TOTAL",                                       value: rec.rentTotal },
+      { col: idx("gainForBankCharge"),   head: "AUDIT PORTAL TOTAL | MATCHING",                    value: rec.portalTotal, field: "portalTotal" },
+      { col: idx("deductedRentOthers"),  head: "TOTAL INTERNAL TRANSFERS DEDUCTED ALL THE CHARGES", value: rec.transfersTotal },
+      { col: idx("deductedRent"),        head: "DIFFERENCE TO CONSIDER",                           value: rec.transferDifference }
+    ];
+    var byCol = {};
+    spec.forEach(function(item){ byCol[item.col] = item; });
 
-    function makeRow(cells, leadLabel){
+    function makeRow(kind, leadLabel){
       var tr = document.createElement("tr");
-      tr.className = "recon-row";
-      // The three lead columns are one sticky cell, as on the subtotal rows, so a long block name
-      // stays pinned and clipped inside them instead of overflowing across the scrolled columns.
+      tr.className = "recon-row recon-" + kind;
       var html = '<td class="sticky-col sticky-col-1 recon-lead" style="left:0" colspan="3">' +
                  escapeHtml(leadLabel || "") + "</td>";
       for (var c = lead; c < total; c++){
-        var cell = cells[c];
-        if (cell === undefined){ html += "<td></td>"; continue; }
-        if (cell.input){
+        var item = byCol[c];
+        if (!item){ html += "<td></td>"; continue; }
+        if (kind === "head"){
+          html += '<td class="recon-cell recon-head-cell">' + escapeHtml(item.head) + "</td>";
+        } else if (item.field){
           html += '<td class="num recon-cell recon-input"><input type="number" step="0.01" class="report-input" ' +
-                  'data-recon="' + escapeHtml(code) + '" data-field="' + cell.field + '" value="' + cell.value + '"></td>';
-        } else if (cell.label !== undefined){
-          // Excel lets a label spill across the empty cells to its right; an HTML cell clips instead.
-          // Absolutely positioning the text reproduces the spill without disturbing column widths.
-          html += '<td class="recon-cell recon-label-cell"><span>' + escapeHtml(cell.label) + "</span></td>";
+                  'data-recon="' + escapeHtml(code) + '" data-field="' + item.field + '" value="' + item.value + '"></td>';
         } else {
-          html += '<td class="num recon-cell">' + fmtAmount(cell.value) + "</td>";
+          html += '<td class="num recon-cell recon-value-cell">' + fmtAmount(item.value) + "</td>";
         }
       }
       tr.innerHTML = html;
@@ -3209,29 +3209,8 @@
       return tr;
     }
 
-    var r1 = {}, r2 = {}, r3 = {};
-    r1[C.profit] = { label: "ACTUAL PROFIT NEEDS TO TAKE" };
-    r1[C.bankCharges] = { value: rec.bankChargesDifference };
-    r1[C.actualBank] = { value: rec.actualProfit };
-    r1[C.internal] = { label: "BANK CHARGES DIFFERENCE | ACTUAL VS. BANK" };
-    r1[C.dedRent] = { value: rec.transfersTotal };
-    r1[C.payoutFee] = { label: "TOTAL INTERNAL TRANSFERS DEDUCTED ALL THE CHARGES" };
-
-    r2[C.profit] = { label: "ACTUAL PROFIT + NOQOODY GAIN FROM BANK CHARGES" };
-    r2[C.actualBank] = { value: rec.actualProfitPlusGain };
-    r2[C.dedOthers] = { label: "AUDIT PORTAL TOTAL | MATCHING" };
-    r2[C.dedRent] = { input: true, field: "portalTotal", value: rec.portalTotal };
-    r2[C.payoutFee] = { value: rec.transferDifference };
-    r2[C.merchantPayout] = { label: "DIFFERENCE TO CONSIDER" };
-
-    r3[C.profit] = { label: "AUDIT PORTAL TOTAL | MATCHING" };
-    r3[C.actualBank] = { input: true, field: "portalProfit", value: rec.portalProfit };
-    r3[C.bankDiff] = { value: rec.profitDifference };
-    r3[C.internal] = { label: "DIFFERENCE TO CONSIDER" };
-
-    makeRow(r1, "RECONCILIATION — Account Code " + code).classList.add("recon-first");
-    makeRow(r2, "");
-    makeRow(r3, "").classList.add("recon-last");
+    makeRow("head", "RECONCILIATION — Account Code " + code);
+    makeRow("value", "");
   }
 
   function renderPayoutReport(report){
@@ -3503,7 +3482,10 @@
     bad: { fill: "FFC7CE", font: "9C0006" },
     neutral: { fill: "FFEB9C", font: "9C6500" },
     accent1Light: { fill: "B4C6E7", font: null },
-    accent3Light: { fill: "C6E0B4", font: null }
+    accent3Light: { fill: "C6E0B4", font: null },
+    // Accent 4 from the reference workbook's theme, and a light tint of it for the figures row.
+    accent4: { fill: "8064A2", font: "FFFFFF" },
+    accent4Light: { fill: "E4DFEC", font: null }
   };
   var HEADER_COLOR_BY_KEY = {
     number: "input", mid: "good", merchant: "bad",
@@ -3717,7 +3699,7 @@
       // RECONCILIATION columns, matching the block the user builds by hand. Three rows; each figure
       // sits in the column its label names, with the label in the neighbouring cell.
       var rec = group.reconcile || {};
-      var blockRows = [pushRow([], 0), pushRow([], 0), pushRow([], 0)];
+      var blockRows = [pushRow([], 0), pushRow([], 0)];   // header row, then the figures
       reconBlocks.push({ rows: blockRows, subtotalRowIdx: subRowIdx, rec: rec });
 
       sections.push({ dataRows: sectionDataRows, mainRowSpans: mainRowSpans, subtotalRowIdx: subRowIdx });
@@ -3911,84 +3893,66 @@
       }
     });
 
-    // Reconciliation blocks, laid out across the FINAL RECONCILIATION columns exactly as the block
-    // is built by hand, three rows under each Account Code subtotal:
+    // Reconciliation block: a header row and a figures row across the FINAL RECONCILIATION columns,
+    // directly under each Account Code subtotal, matching the reference workbook.
     //
-    //   row 1   [ACTUAL PROFIT ...]  bankDiff  ACTUAL PROFIT | label      label  transfersTotal  label
-    //   row 2   [+ GAIN label]                 +GAIN         | portalTotal  diff  label
-    //   row 3   [portal label]                 portalProfit  diff | label
-    //
-    // Cleaned against the hand-built original: the cell duplicating the bank-charges difference and
-    // a formula pointing at an empty cell are both dropped, every figure is ROUND(...,2) where the
-    // originals carried float noise, and the two typed cells carry the workbook's input styling.
+    // One correction to the reference: Bank Charges Difference is (modelled - actual), so it is
+    // negative when the bank took more than modelled. Actual Profit therefore ADDS it. The
+    // reference subtracted it, which raised profit when the bank overcharged.
     reconBlocks.forEach(function(block){
       var sub = block.subtotalRowIdx;
-      var r1 = block.rows[0], r2 = block.rows[1], r3 = block.rows[2];
+      var hRow = block.rows[0], vRow = block.rows[1];
+      var rec = block.rec;
       var C = {
-        profit: reconCol("totalProfit"),        bankCharges: reconCol("totalBankFee"),
+        profit: reconCol("totalProfit"), bankCharges: reconCol("totalBankFee"),
         actualBank: reconCol("actualBankCharges"), bankDiff: reconCol("bankDifference"),
         internal: reconCol("totalInternalTransfer"), rent: reconCol("rent"),
         gain: reconCol("gain"), dedOthers: reconCol("deductedRentOthers"),
-        dedRent: reconCol("deductedRent"), payoutFee: reconCol("payoutFee"),
-        merchantPayout: reconCol("merchantPayout")
+        dedRent: reconCol("deductedRent")
       };
-      function label(rowIdx, colIdx, text){
-        var addr = XLSX.utils.encode_cell({ r: rowIdx, c: colIdx });
-        reportSheet[addr] = { t: "s", v: text };
-        return addr;
-      }
-      function money(rowIdx, colIdx, value, formula){
-        var addr = XLSX.utils.encode_cell({ r: rowIdx, c: colIdx });
-        reportSheet[addr] = { t: "n", v: value === undefined || value === null ? 0 : value, z: XL_FMT_AMOUNT };
-        if (formula) reportSheet[addr].f = formula;
-        return addr;
-      }
-      var rec = block.rec;
+      function addr(rowIdx, colIdx){ return XLSX.utils.encode_cell({ r: rowIdx, c: colIdx }); }
 
-      // --- profit side ---
-      label(r1, C.profit, "ACTUAL PROFIT NEEDS TO TAKE");
-      var bankDiffAddr = money(r1, C.bankCharges, rec.bankChargesDifference,
-        "ROUND(" + ref(C.actualBank, sub) + "-" + ref(C.bankCharges, sub) + ",2)");
-      label(r1, C.internal, "BANK CHARGES DIFFERENCE | ACTUAL VS. BANK");
-      // Bank Difference is already (modelled - actual), so adding it applies the correction.
-      var actualProfitAddr = money(r1, C.actualBank, rec.actualProfit,
-        "ROUND(" + ref(C.profit, sub) + "+" + ref(C.bankDiff, sub) + ",2)");
-
-      label(r2, C.profit, "ACTUAL PROFIT + NOQOODY GAIN FROM BANK CHARGES");
-      var plusGainAddr = money(r2, C.actualBank, rec.actualProfitPlusGain,
-        "ROUND(" + actualProfitAddr + "+" + ref(C.gain, sub) + ",2)");
-
-      label(r3, C.profit, "AUDIT PORTAL TOTAL | MATCHING");
-      var portalProfitAddr = money(r3, C.actualBank, rec.portalProfit);
-      money(r3, C.bankDiff, rec.profitDifference, "ROUND(" + plusGainAddr + "-" + portalProfitAddr + ",2)");
-      label(r3, C.internal, "DIFFERENCE TO CONSIDER");
-
-      // --- transfer side ---
-      var transfersAddr = money(r1, C.dedRent, rec.transfersTotal, "ROUND(" + ref(C.dedOthers, sub) + ",2)");
-      label(r1, C.payoutFee, "TOTAL INTERNAL TRANSFERS DEDUCTED ALL THE CHARGES");
-
-      label(r2, C.dedOthers, "AUDIT PORTAL TOTAL | MATCHING");
-      var portalTotalAddr = money(r2, C.dedRent, rec.portalTotal);
-      money(r2, C.payoutFee, rec.transferDifference, "ROUND(" + transfersAddr + "-" + portalTotalAddr + ",2)");
-      label(r2, C.merchantPayout, "DIFFERENCE TO CONSIDER");
-
-      // Styling: the whole block highlighted, the two typed cells marked as inputs, figures bold.
-      [[r1, C.profit], [r1, C.bankCharges], [r1, C.internal], [r1, C.actualBank],
-       [r1, C.dedRent], [r1, C.payoutFee],
-       [r2, C.profit], [r2, C.actualBank], [r2, C.dedOthers], [r2, C.dedRent], [r2, C.payoutFee], [r2, C.merchantPayout],
-       [r3, C.profit], [r3, C.actualBank], [r3, C.bankDiff], [r3, C.internal]].forEach(function(rc){
-        var addr = XLSX.utils.encode_cell({ r: rc[0], c: rc[1] });
-        if (!reportSheet[addr]) return;
-        styleCell(reportSheet, addr, "neutral");
-        reportSheet[addr].s.font = reportSheet[addr].s.font || {};
-        reportSheet[addr].s.font.bold = true;
+      // header row / figures row, column by column
+      var spec = [
+        { col: C.profit,      head: "ACTUAL PROFIT NEEDS TO TAKE",                     value: rec.actualProfit },
+        { col: C.bankCharges, head: "ACTUAL PROFIT + NOQOODY GAIN FROM BANK CHARGES",  value: rec.actualProfitPlusGain },
+        { col: C.actualBank,  head: "AUDIT PORTAL PROFIT | MATCHING",                  value: rec.portalProfit, input: true },
+        { col: C.bankDiff,    head: "DIFFERENCE TO CONSIDER",                          value: rec.profitDifference },
+        { col: C.internal,    head: "BANK CHARGES DIFFERENCE | ACTUAL VS. BANK",       value: rec.bankChargesDifference },
+        { col: C.rent,        head: "RENT TOTAL",                                      value: rec.rentTotal },
+        { col: C.gain,        head: "AUDIT PORTAL TOTAL | MATCHING",                   value: rec.portalTotal, input: true },
+        { col: C.dedOthers,   head: "TOTAL INTERNAL TRANSFERS DEDUCTED ALL THE CHARGES", value: rec.transfersTotal },
+        { col: C.dedRent,     head: "DIFFERENCE TO CONSIDER",                          value: rec.transferDifference }
+      ];
+      spec.forEach(function(item){
+        var h = addr(hRow, item.col), v = addr(vRow, item.col);
+        reportSheet[h] = { t: "s", v: item.head };
+        reportSheet[v] = { t: "n", v: item.value === undefined || item.value === null ? 0 : item.value, z: XL_FMT_AMOUNT };
+        styleCell(reportSheet, h, "accent4");
+        reportSheet[h].s.font = { bold: true, color: { rgb: "FFFFFFFF" }, sz: 9 };
+        reportSheet[h].s.alignment = { wrapText: true, vertical: "center" };
+        styleCell(reportSheet, v, item.input ? "input" : "accent4Light");
+        reportSheet[v].s.font = { bold: true };
       });
-      [portalProfitAddr, portalTotalAddr].forEach(function(addr){
-        styleCell(reportSheet, addr, "input");
-        reportSheet[addr].s.font = reportSheet[addr].s.font || {};
-        reportSheet[addr].s.font.bold = true;
-        reportSheet[addr].z = XL_FMT_AMOUNT;
+
+      // Formulas, referencing the subtotal above and each other.
+      var F = {};
+      spec.forEach(function(item){ F[item.col] = addr(vRow, item.col); });
+      setFormula(vRow, C.internal,    "ROUND(" + ref(C.bankCharges, sub) + "-" + ref(C.actualBank, sub) + ",2)");
+      setFormula(vRow, C.profit,      "ROUND(" + ref(C.profit, sub) + "+" + F[C.internal] + ",2)");
+      setFormula(vRow, C.bankCharges, "ROUND(" + F[C.profit] + "+" + ref(C.gain, sub) + ",2)");
+      setFormula(vRow, C.bankDiff,    "ROUND(" + F[C.bankCharges] + "-" + F[C.actualBank] + ",2)");
+      setFormula(vRow, C.rent,        "ROUND(" + ref(C.rent, sub) + ",2)");
+      setFormula(vRow, C.dedOthers,   "ROUND(" + ref(C.dedOthers, sub) + ",2)");
+      setFormula(vRow, C.dedRent,     "ROUND(" + F[C.dedOthers] + "-" + F[C.gain] + ",2)");
+      // the two inputs keep their typed value and their input styling
+      [C.actualBank, C.gain].forEach(function(col){
+        var a2 = addr(vRow, col);
+        styleCell(reportSheet, a2, "input");
+        reportSheet[a2].s.font = { bold: true };
+        reportSheet[a2].z = XL_FMT_AMOUNT;
       });
+      reportSheet["!rows"] = reportSheet["!rows"] || [];
     });
 
     var prdSheet = buildProcessRawDetailsSheet(state.result.processed);

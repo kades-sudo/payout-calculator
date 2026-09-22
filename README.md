@@ -1577,3 +1577,62 @@ correct subtotal row and chain within the block. 12 inputs rendered (two per blo
 
 Regression: 3,258/3,258 export formulas evaluate to their cached values, 107/107 rate pairs, 30
 merchants / 55 rows unchanged, 11 OOXML parts well-formed, control total 3,707 / 1,245,071.15.
+
+---
+
+## Reconciliation block: header row + figures row, Accent 4
+
+**Audit status: PENDING VERIFICATION.** Rebuilt from a second reference workbook, which restructured
+the block into a proper header row above a figures row. Cleaner than the previous arrangement and
+adopted as-is, with one formula corrected.
+
+### Layout, as exported (subtotal on row 9; block on rows 10-11)
+
+| Col | Header | Formula |
+|---|---|---|
+| BX | ACTUAL PROFIT NEEDS TO TAKE | `=ROUND(BX9+CB11,2)` |
+| BY | ACTUAL PROFIT + NOQOODY GAIN FROM BANK CHARGES | `=ROUND(BX11+CD9,2)` |
+| BZ | AUDIT PORTAL PROFIT \| MATCHING | input |
+| CA | DIFFERENCE TO CONSIDER | `=ROUND(BY11-BZ11,2)` |
+| CB | BANK CHARGES DIFFERENCE \| ACTUAL VS. BANK | `=ROUND(BY9-BZ9,2)` |
+| CC | RENT TOTAL | `=ROUND(CC9,2)` |
+| CD | AUDIT PORTAL TOTAL \| MATCHING | input |
+| CE | TOTAL INTERNAL TRANSFERS DEDUCTED ALL THE CHARGES | `=ROUND(CE9,2)` |
+| CF | DIFFERENCE TO CONSIDER | `=ROUND(CE11-CD11,2)` |
+
+Header row in Accent 4 (`#8064A2`, white bold), figures row in a light tint (`#E4DFEC`), the two
+audit-portal cells in the workbook's `input` orange.
+
+### The one correction
+
+The reference had `ACTUAL PROFIT = ROUND(BX10-CB12,2)`, subtracting a difference defined as
+*(modelled − actual)*. On the sample data the bank took **0.13 more** than modelled, and that formula
+returned **133.24** — profit rising because the bank overcharged. Subtracting a negative adds it.
+
+It now **adds** it: `ROUND(BX9+CB11,2)` → **132.98** on that data, which is what the *first*
+reference workbook computed for the same figure. Verified on the live export: subtotal profit
+122.09, bank charges difference −0.14, actual profit **121.95**.
+
+### Two label changes
+
+`BZ` and `CD` both read "AUDIT PORTAL TOTAL | MATCHING" in the reference, for portal *profit* and
+portal *transfer total* respectively; `BZ` is now "AUDIT PORTAL PROFIT | MATCHING". `CC` was
+labelled "RENT AUDIT PORTAL TOTAL | MATCHING" but carried `=SUM(CC10)`, the Rent subtotal, with
+nothing comparing against it — it is labelled "RENT TOTAL" for what it actually is. **If `CC` was
+meant to be a third portal input, it is not one yet.**
+
+### Verification
+
+Six blocks, one per Account Code, in the web report and the export; 12 inputs. Web and export agree
+cell for cell, and every column is pixel-aligned with the column header and the subtotal above it:
+
+```
+grid col 69..77   colHeader x = subtotal x = reconHead x = reconValue x   ALIGNED (all nine)
+```
+
+Regression: 3,264/3,264 export formulas evaluate to their cached values, 107/107 rate pairs, 30
+merchants / 55 rows unchanged, 11 OOXML parts well-formed, control total 3,707 / 1,245,071.15.
+
+A note on method: three screenshots in a row appeared to show the block rendering blank, which was
+the capture script leaving the table at `scrollLeft=0`, not a layout fault. Measuring the cells'
+bounding boxes settled it — the DOM was correct throughout.
