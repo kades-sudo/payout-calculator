@@ -1202,6 +1202,27 @@
     return map;
   }
 
+  // Which report sections can actually hold a wallet transaction.
+  //
+  // Wallet_Rules decides it: a section has a wallet variant only where some rule classifies a card
+  // into "<section> WALLET". AMEX, JCB and China UnionPay have no such rule and no wallet concept
+  // at all - a card is AMEX, never "AMEX Wallet". Those sections therefore keep their own scheme
+  // columns on a wallet row instead of taking the one general wallet rate, which would otherwise
+  // print a wallet price against a card type that can never be a wallet.
+  function buildWalletSectionKeys(rows){
+    var keys = new Set();
+    if (!rows || !rows.length) return keys;
+    var resolver = buildResolver(Object.keys(rows[0]), WALLET_RULE_FIELD_CANDIDATES);
+    [resolver.onMatch, resolver.onNoMatch].forEach(function(col){
+      if (!col) return;
+      rows.forEach(function(row){
+        var split = splitWalletLabel(row[col]);
+        if (split.isWallet && split.base) keys.add(split.base);
+      });
+    });
+    return keys;
+  }
+
   function buildPaymentGroups(rows){
     if (!rows || !rows.length) return [];
     var headers = Object.keys(rows[0]);
@@ -1467,7 +1488,7 @@
       : (pg.txnFeeColumn ? getByNormalizedKey(tier.raw, pg.txnFeeColumn) : ""));
   }
 
-  function computePaymentGroupCell(rows, masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled, txnFeeIndex){
+  function computePaymentGroupCell(rows, masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled, txnFeeIndex, walletSectionKeys){
     var groupRows = rows.filter(function(r){
       if (!walletEnabled) return norm(r.cardType2) === norm(pg.name);
       var split = splitWalletLabel(r.walletClassification);
@@ -1498,7 +1519,16 @@
     // debit value in all seven cost rows. Checked against the OMS Commission field, the scheme
     // rate reconciles to the cent on Cost IDs 2, 3, 4 and 7, while the old general column was out
     // by 272.72 across one Daily batch.
-    var merchantRate = isWallet
+    //
+    // The general wallet rate applies only to sections that HAVE a wallet variant. AMEX, JCB and
+    // China UnionPay do not, so on a wallet row they keep their own Master_List / Txn_Fee columns:
+    // the wallet rate describes a card type that cannot be a wallet, and those sections can never
+    // hold a wallet transaction to price. With no Wallet_Rules to read, every section is treated as
+    // wallet-capable, which is the behaviour this replaces.
+    var walletPricing = isWallet &&
+      (walletSectionKeys && walletSectionKeys.size ? walletSectionKeys.has(norm(pg.name)) : true);
+
+    var merchantRate = walletPricing
       ? toRate(pickByCandidates(masterEntry ? masterEntry.raw : null, WALLET_RATE_CANDIDATES))
       : (masterEntry && pg.masterListRateColumn ? toRate(getByNormalizedKey(masterEntry.raw, pg.masterListRateColumn)) : 0);
     var bankRate = bankCostRow && pg.costTableColumn ? toRate(getByNormalizedKey(bankCostRow, pg.costTableColumn)) : 0;
@@ -1509,7 +1539,7 @@
     // a single number to be chased by hand.
     var actualBankFee = round2(sumBy(saleRows, function(r){ return toNumber(r.commission); }));
     var noqoodyCharge = round2(gross * merchantRate);
-    var ratePerTxn = resolveRatePerTxn(masterEntry, pg, isBelow, isWallet, txnFeeIndex);
+    var ratePerTxn = resolveRatePerTxn(masterEntry, pg, isBelow, walletPricing, txnFeeIndex);
     var noqoodyChargePerTxn = round2(clearedTxn * ratePerTxn);
     // Profit is Noqoody's own margin: what the merchant is charged, less what the bank charges us.
     // A Refund is the cardholder's money going back, not a Noqoody expense — it is deducted from
@@ -1530,7 +1560,8 @@
     var threshold = opts.threshold, walletEnabled = !!opts.walletEnabled;
     var id = norm(g.mid) + "|" + norm(g.merchantKey) + (isWallet ? "|wallet" : "|card") + (isBelow ? "|below" : "|main");
     var groups = paymentGroups.map(function(pg){
-      return computePaymentGroupCell(rows, g.masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled, txnFeeIndex);
+      return computePaymentGroupCell(rows, g.masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled, txnFeeIndex,
+                                     opts.walletSectionKeys);
     });
     var totalProfit = round2(sumBy(groups, function(c){ return c.profit; }));
     var totalBankFee = round2(sumBy(groups, function(c){ return c.bankFee; }));
@@ -1609,7 +1640,7 @@
     };
   }
 
-  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency, walletConfigured, txnFeeIndex, reconInputs){
+  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency, walletConfigured, txnFeeIndex, reconInputs, walletSectionKeys){
     reconInputs = reconInputs || {};
     var merchantGroups = new Map();
     processed.forEach(function(row){
@@ -1708,7 +1739,7 @@
       var built = lines.map(function(spec, i){
         return buildMerchantLine(g, spec.rows, {
           isBelow: spec.isBelow, isWallet: spec.isWallet, isPrimary: i === 0,
-          threshold: threshold, walletEnabled: walletConfigured
+          threshold: threshold, walletEnabled: walletConfigured, walletSectionKeys: walletSectionKeys
         }, bankCostIndex, paymentGroups, manualInputs, txnFeeIndex);
       });
 
@@ -3106,7 +3137,7 @@
     var txnFeeIndex = buildTxnFeeIndex(state.txnFeeRows);
     state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs,
                                              state.frequency, !!(state.result && state.result.walletConfigured), txnFeeIndex,
-                                             state.reconInputs);
+                                             state.reconInputs, buildWalletSectionKeys(state.walletRulesRows));
     renderPayoutReport(state.payoutReport);
     renderDataStrip();
     applyMerchantFilter();

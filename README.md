@@ -1717,3 +1717,86 @@ and nothing flags it.
 
 3,264/3,264 export formulas evaluate to their cached values, 107/107 rate pairs, row shape
 unchanged, control total 3,707 / 1,245,071.15.
+
+---
+
+## Wallet pricing no longer leaks into sections that have no wallet — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** The rule came from the user (Option 2 of three offered); the
+impact below was measured.
+
+### The defect
+
+A wallet row priced its Merchant Rate from one general column with no reference to the section:
+
+```js
+var merchantRate = isWallet
+  ? toRate(pickByCandidates(masterEntry.raw, WALLET_RATE_CANDIDATES))   // no `pg` anywhere
+  : (masterEntry && pg.masterListRateColumn ? toRate(...) : 0);
+```
+
+So **every** section on a wallet row printed the same number. On `AL MARFAT TAILORING | WALLET` the
+AMEX section showed a Merchant Rate of 0.02 — the merchant's general `Wallet MerchantRate` — when
+its `AMEX Merchant Rate` is 0.03. `resolveRatePerTxn` had the same shape, so AMEX also showed the
+general wallet fee of 0.5 against a `Txn_Fee` AMEX value of 0.
+
+AMEX, JCB and China UnionPay have no wallet concept at all — a card is AMEX, never "AMEX Wallet".
+`Wallet_Rules` confirms it: the sheet only ever produces `CREDIT CARD`, `DEBIT CARD` and `HIMYAN`,
+each with and without ` WALLET`. Those three sections can never hold a wallet transaction, so the
+rate shown against them described a card type that cannot be a wallet.
+
+**Bank Rate was never affected** and was verified separately: it has no `isWallet` branch, reads
+`pg.costTableColumn` on both row types, and varies correctly by Cost ID (AMEX 2.75% everywhere;
+China UnionPay 0.0175 on Cost ID 1 vs 0.025 on Cost ID 7).
+
+### The rule
+
+The general wallet rate now applies **only to sections that have a wallet variant**, determined from
+`Wallet_Rules` rather than hard-coded: a section is wallet-capable when some rule classifies a card
+into `<section> WALLET`. Everything else keeps its own `Master_List` / `Txn_Fee` column on a wallet
+row. Add an `AMEX WALLET` rule to the sheet and AMEX becomes wallet-capable with no code change.
+
+### Impact
+
+Full export diffed cell by cell against the previous build, same inputs:
+
+```
+SHEET DAILY PAYOUT        differing cells: 92   by column: { AQ:30, BC:28, BO:28, AT:2, BF:2, BR:2 }
+SHEET Process Raw Details differing cells: 0
+```
+
+AQ/BC/BO are the AMEX, China UnionPay and JCB **Merchant Rate** columns; AT/BF/BR their **Merchant
+Rate/Txn**. Checked explicitly across all six sections and every row: **0 money cells changed** —
+Gross, Bank Fee, Noqoody Charge, Noqoody Charge/Txn, Refund, Profit and Internal Transfer are all
+untouched, because those three sections carry zero gross and zero cleared transactions.
+
+AQ changed on 30 rows where BC/BO changed on 28: `BVLGARI Vendom` and `BVLGARI Villaggio` have a
+`China UnionPay Merchant Rate` of 0.0185 that already equalled their wallet rate, so those two cells
+had nothing to change. Not a defect — confirmed row by row.
+
+### Guards
+
+Verified against the live `buildWalletSectionKeys`:
+
+| Input | Result |
+|---|---|
+| real `Wallet_Rules` | `{debitcard, creditcard, himyan}` |
+| `+ AMEX WALLET` rule | `{debitcard, creditcard, himyan, amex}` — config-driven |
+| null / empty / unrecognised headers | empty set → **old behaviour preserved**, nothing breaks |
+| rules with no `WALLET` label at all | empty set → same |
+
+With no `Wallet_Rules` to read, every section is treated as wallet-capable, which is exactly the
+behaviour this replaces — so a workbook without the sheet is unaffected.
+
+### A correction to an earlier answer
+
+An earlier reply said a China Union Pay transaction "would populate the China UnionPay section".
+That is wrong. With wallet configured, section membership comes from the Wallet Classification base,
+not `Card Type 2`, and `Wallet_Rules` has no `China Union Pay` row — such a transaction gets a blank
+classification and lands in **Others**. The `China Union Pay` row in `Card Type Classification` is
+not sufficient on its own; a matching `Wallet_Rules` row is also needed. **Still outstanding.**
+
+### Regression
+
+3,264/3,264 export formulas evaluate to their cached values, 107/107 rate pairs, row shape unchanged,
+Card Type column unchanged, control total 3,707 / 1,245,071.15.
