@@ -1800,3 +1800,52 @@ not sufficient on its own; a matching `Wallet_Rules` row is also needed. **Still
 
 3,264/3,264 export formulas evaluate to their cached values, 107/107 rate pairs, row shape unchanged,
 Card Type column unchanged, control total 3,707 / 1,245,071.15.
+
+---
+
+## Transfer DIFFERENCE TO CONSIDER now reads negative — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** Sign convention chosen by the user.
+
+The reconciliation block's second `DIFFERENCE TO CONSIDER` (column CF) was
+`ROUND(CE-CD,2)` — *Total Internal Transfers Deducted All The Charges* minus *Audit Portal Total |
+Matching*. It is now stated the other way round, `ROUND(CD-CE,2)`, so the figure reads negative
+while the portal total is short of what was calculated for transfer.
+
+```js
+transferDifference: round2(portalTotal - transfersTotal)
+```
+
+The profit `DIFFERENCE TO CONSIDER` above it (column CA) is deliberately **not** flipped: it stays
+`ROUND(BY-BZ,2)`, *Actual Profit + Gain* minus *Audit Portal Profit*. The two compare different
+sources and were not asked to match.
+
+### Impact
+
+```
+SHEET DAILY PAYOUT        differing cells: 6   by column: { CF: 6 }
+SHEET Process Raw Details differing cells: 0
+```
+
+Six cells, one per Account Code block — the formula and its cached value. Nothing else in either
+sheet moved.
+
+| Account Code | Was | Now |
+|---|---|---|
+| 4 | 15,882.48 | −15,882.48 |
+| 9 | 29.40 | −29.40 |
+| 12 | 47.50 | −47.50 |
+| 13 | 760.00 | −760.00 |
+| 15 | 453,615.67 | −453,615.67 |
+| 16 | 350,310.80 | −350,310.80 |
+
+Both figures are large because `AUDIT PORTAL TOTAL | MATCHING` is a manual input still sitting at 0
+in this run; once the portal figure is typed in, the difference closes toward zero from below.
+
+Web report and export agree cell for cell — the web view shows the same six negatives alongside the
+six unchanged positive profit differences.
+
+### Regression
+
+3,264/3,264 export formulas evaluate to their cached values, no page errors, control total
+3,707 / 1,245,071.15.

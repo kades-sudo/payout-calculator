@@ -1873,7 +1873,10 @@
         rentTotal: subtotal.rent,
         portalTotal: portalTotal,
         transfersTotal: transfersTotal,
-        transferDifference: round2(transfersTotal - portalTotal)
+        // Stated as (portal - ours), so the figure reads negative while the portal total is short
+        // of what we calculated should be transferred. The profit DIFFERENCE TO CONSIDER above it
+        // is deliberately left as (ours - portal); the two are read against different sources.
+        transferDifference: round2(portalTotal - transfersTotal)
       };
     }
 
@@ -3991,7 +3994,7 @@
       setFormula(vRow, C.bankDiff,    "ROUND(" + F[C.bankCharges] + "-" + F[C.actualBank] + ",2)");
       setFormula(vRow, C.rent,        "ROUND(" + ref(C.rent, sub) + ",2)");
       setFormula(vRow, C.dedOthers,   "ROUND(" + ref(C.dedOthers, sub) + ",2)");
-      setFormula(vRow, C.dedRent,     "ROUND(" + F[C.dedOthers] + "-" + F[C.gain] + ",2)");
+      setFormula(vRow, C.dedRent,     "ROUND(" + F[C.gain] + "-" + F[C.dedOthers] + ",2)");
       // the two inputs keep their typed value and their input styling
       [C.actualBank, C.gain].forEach(function(col){
         var a2 = addr(vRow, col);
