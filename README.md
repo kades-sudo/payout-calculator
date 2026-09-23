@@ -1636,3 +1636,84 @@ merchants / 55 rows unchanged, 11 OOXML parts well-formed, control total 3,707 /
 A note on method: three screenshots in a row appeared to show the block rendering blank, which was
 the capture script leaving the table at `scrollLeft=0`, not a layout fault. Measuring the cells'
 bounding boxes settled it — the DOM was correct throughout.
+
+---
+
+## Card Type now reads column E of Card Type Classification — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** The rule came from the user; the impact below was measured.
+
+### What changed
+
+`buildCardTypeMap` read three columns of `Card Type Classification` — A as the lookup key, B
+(`CARD TYPE 1`) as the displayed **Card Type**, C (`CARD TYPE 2`) as **Card Type 2**. Columns D
+(`RATE | NORMAL`) and E (`RATE | HIGH`) were never read at all.
+
+It now reads **all five columns**, and the displayed **Card Type** comes from **column E**:
+
+| Column | Header | Field | Used for |
+|---|---|---|---|
+| A | `CARD TYPE` | lookup key | matched against `Card Type (On us/Off us)` |
+| B | `CARD TYPE 1` | `cardTypeGroup` | kept as a reference; **not displayed** |
+| C | `CARD TYPE 2` | `cardType2` | **section grouping + dashboard** |
+| D | `RATE \| NORMAL` | `rateNormal` | kept as a reference; not displayed |
+| E | `RATE \| HIGH` | `cardType` | **displayed Card Type** |
+
+B and D are ingested but unused, so making them a reference later needs no second schema change.
+
+### Why this is display-only
+
+`cardType` is referenced in exactly two places: where it is written onto the row, and in the Process
+Raw Details column list. It feeds no rate lookup, no grouping and no total. Section grouping and the
+dashboard (`DASHBOARD_REFERENCE_FIELD`) both read `cardType2`, which is untouched.
+
+Measured, not assumed — full export diffed cell by cell (value, formula and style) against the
+previous build, same Masterlist and same OMS file:
+
+```
+SHEET DAILY PAYOUT        differing cells: 0     by column: {}
+SHEET Process Raw Details differing cells: 3707  by column: { O: 3707 }
+```
+
+Column O is Card Type. Not one figure, formula, style or merge moved anywhere else.
+
+| Card Type | Rows |
+|---|---|
+| NAPS \| 1.5 | 2,132 |
+| CREDIT CARD \| 1.65% | 997 |
+| CREDIT CARD \| 1.25% | 318 |
+| HIMYAN \| 0.85% | 260 |
+
+`Card Type 2` unchanged: CREDIT CARD 1,315 / DEBIT CARD 2,132 / HIMYAN 260.
+
+### Guards
+
+All five columns resolve by header name on every Masterlist version supplied so far — `RATE |
+NORMAL ` and `RATE | HIGH ` survive `norm()` as `ratenormal` / `ratehigh`, so the positional
+fallback is never needed. Verified against the live function:
+
+- three-column sheet → Card Type falls back to `CARD TYPE 1`
+- blank column E on a five-column sheet → same fallback, column never blanks
+- empty or null matrix → empty map, no throw
+- blank rows in the sheet → still skipped by the blank-key guard
+
+### The text is copied verbatim
+
+Card Type prints exactly what column E holds. The sheet reads `NAPS | 1.5`, not `NAPS | 1.50`, and
+only the non-NAPS rows carry a `%`. Formatting is a Masterlist edit, not an app change.
+
+### Sample data
+
+The built-in demo's column E held bare percentages (`1.25%`), which would have shown as a Card Type
+of "1.25%". It now follows the real workbook's `<label> | <rate>` convention.
+
+### Open question
+
+Column E embeds a rate (`1.65%`), but charged rates come from `Master_List` + `Bank_Cost`. As
+display text that is harmless; if column E ever becomes authoritative, the two sources can disagree
+and nothing flags it.
+
+### Regression
+
+3,264/3,264 export formulas evaluate to their cached values, 107/107 rate pairs, row shape
+unchanged, control total 3,707 / 1,245,071.15.

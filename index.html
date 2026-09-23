@@ -953,16 +953,17 @@
       { "Merchant Key": "", MID: "101322", "Merchant Name": "Blue Harbor Seafood", "Payout Frequency": "Daily", "Cost ID": "1", "CC Merchant Rate": "1.85%", "Debit Merchant Rate": "0.50%", Status: "Active" }
       // 101999 intentionally omitted to demonstrate an unmatched MID
     ];
-    // Card Type Classification: col A = lookup key ("Card Type"), B = output Card Type ("Card Type 1"),
-    // C = output Card Type 2 ("Card Type 2") — matches the real workbook's column layout.
+    // Card Type Classification: col A = lookup key ("Card Type"), B = "Card Type 1",
+    // C = output Card Type 2, D = "Rate | Normal", E = "Rate | High" = the displayed Card Type.
+    // Col E follows the real workbook's "<label> | <rate>" convention, not a bare percentage.
     var cardTypeMatrix = [
       ["Card Type", "Card Type 1", "Card Type 2", "Rate | Normal", "Rate | High"],
-      ["VISA-ON US", "Credit Card", "Bank-Issued", "1.85%", "1.25%"],
-      ["MASTERCARD-ON US", "Credit Card", "Bank-Issued", "1.85%", "1.25%"],
-      ["VISA-OFF US", "Credit Card", "Non-Bank", "1.85%", "1.65%"],
-      ["MASTERCARD-OFF US", "Credit Card", "Non-Bank", "1.85%", "1.65%"],
-      ["JCB-ON US", "Debit Card", "Bank-Issued", "0.50%", "0.50%"],
-      ["UNIONPAY-OFF US", "Debit Card", "Non-Bank", "0.50%", "0.50%"]
+      ["VISA-ON US", "Credit Card", "Bank-Issued", "1.85%", "CREDIT CARD | 1.25%"],
+      ["MASTERCARD-ON US", "Credit Card", "Bank-Issued", "1.85%", "CREDIT CARD | 1.25%"],
+      ["VISA-OFF US", "Credit Card", "Non-Bank", "1.85%", "CREDIT CARD | 1.65%"],
+      ["MASTERCARD-OFF US", "Credit Card", "Non-Bank", "1.85%", "CREDIT CARD | 1.65%"],
+      ["JCB-ON US", "Debit Card", "Bank-Issued", "0.50%", "DEBIT CARD | 0.50%"],
+      ["UNIONPAY-OFF US", "Debit Card", "Non-Bank", "0.50%", "DEBIT CARD | 0.50%"]
     ];
     var terminalMappingRows = [
       { "Merchant Key": "", MID: "100234", "Terminal ID": "T-001", Platform: "PAX", "Account Code": "15", Status: "Active" },
@@ -1020,8 +1021,14 @@
 
   /* ---------------- pipeline ---------------- */
   // Card Type Classification sheet layout (verified against a real Master List export):
-  // col A "Card Type" = lookup key, col B "Card Type 1" = output Card Type, col C "Card Type 2" = output Card Type 2.
-  // Header names are matched first; column position (A/B/C) is the fallback for differently-labeled sheets.
+  // col A "Card Type" = lookup key, col B "Card Type 1", col C "Card Type 2",
+  // col D "Rate | Normal", col E "Rate | High".
+  // All five columns are read. The displayed Card Type comes from col E ("NAPS | 1.5",
+  // "CREDIT CARD | 1.65%"), falling back to col B when col E is blank. Col B is still kept as
+  // cardTypeGroup, and cols D/E as rateNormal/rateHigh, so they are available as a reference
+  // without a second schema change. None of these feed a rate, a grouping or a total: section
+  // grouping and the dashboard read cardType2 (col C) only, so Card Type is display-only.
+  // Header names are matched first; column position (A..E) is the fallback for differently-labeled sheets.
   function buildCardTypeMap(matrix){
     var map = new Map();
     if (!matrix || !matrix.length) return map;
@@ -1029,17 +1036,26 @@
     var keyIdx = resolveIndex(headers, ["cardtype", "lookupkey", "cardtypeonusoffus"]);
     var t1Idx = resolveIndex(headers, ["cardtype1", "paymentgroup"]);
     var t2Idx = resolveIndex(headers, ["cardtype2"]);
+    var rnIdx = resolveIndex(headers, ["ratenormal"]);
+    var rhIdx = resolveIndex(headers, ["ratehigh"]);
     if (keyIdx === -1) keyIdx = 0;
     if (t1Idx === -1) t1Idx = 1;
     if (t2Idx === -1) t2Idx = 2;
+    if (rnIdx === -1) rnIdx = 3;
+    if (rhIdx === -1) rhIdx = 4;
+    var cell = function(v){ return typeof v === "string" ? v.trim() : (v !== undefined ? v : ""); };
     for (var r = 1; r < matrix.length; r++){
       var row = matrix[r] || [];
       var key = norm(row[keyIdx]);
       if (!key) continue;
-      var t1 = row[t1Idx], t2 = row[t2Idx];
+      // Blank col E keeps the old Card Type 1 value rather than emptying the column.
+      var high = cell(row[rhIdx]);
       map.set(key, {
-        cardType: typeof t1 === "string" ? t1.trim() : (t1 !== undefined ? t1 : ""),
-        cardType2: typeof t2 === "string" ? t2.trim() : (t2 !== undefined ? t2 : "")
+        cardType: high !== "" ? high : cell(row[t1Idx]),
+        cardTypeGroup: cell(row[t1Idx]),
+        cardType2: cell(row[t2Idx]),
+        rateNormal: cell(row[rnIdx]),
+        rateHigh: high
       });
     }
     return map;
