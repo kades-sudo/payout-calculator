@@ -1849,3 +1849,77 @@ six unchanged positive profit differences.
 
 3,264/3,264 export formulas evaluate to their cached values, no page errors, control total
 3,707 / 1,245,071.15.
+
+---
+
+## Refund cells coloured by transaction type; Dispute now carries the Refund Fee — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** Both rules came from the user.
+
+### Rule change: a Dispute is charged the Refund Fee
+
+`countRefunds` counted only Refund transactions. It is now `countRefundFeeTxns`, counting **Refund and
+Dispute** alike; a Reversal still carries none. This reverses the earlier "If Dispute no refund fee".
+
+Counted by transaction type alone, exactly the way a Refund is — so a Dispute whose amount is **not**
+negative would be charged the fee even though the Refund *column* excludes it. No such row exists in
+any batch seen so far (all 22 Disputes and the 1 Refund in the current file are negative). If one
+appears, `countRefundFeeTxns` is the single line that decides it.
+
+Money impact on the current Daily run: **+5.00**, all of it AL SULTAN MEDICAL CENTER — one Dispute at
+a Refund Fee of 5, moving its Gain For Bank Charges 0.00 → 5.00 (`CD38`).
+
+### Refund cell colours
+
+A non-zero Refund cell is tinted by the transaction type behind it, in both the web report and the
+export:
+
+| Type | Excel style | Fill | Font |
+|---|---|---|---|
+| Refund | Bad | `FFC7CE` | `9C0006` |
+| Dispute | Neutral | `FFEB9C` | `9C6500` |
+| Reversal | Orange, Accent 6 | `F79646` | `3B2300` |
+
+Accent 6 comes from the same theme the report already draws Accent 4 (`8064A2`) from.
+
+Scope, as specified: **merchant rows only, non-zero cells only.** Subtotal and Grand Total Refund
+cells are left uncoloured — they sum several merchants and can mix types, so no single colour would
+be true of the figure.
+
+A Refund cell is an aggregate and can hold more than one type at once. Precedence is
+**Refund > Dispute > Reversal**; a mixed cell takes the first present.
+
+### Verified
+
+Real Daily run, styles compared by unpacking the OOXML and resolving each cell's `cellXfs` entry:
+
+```
+cells whose STYLE changed: 2
+   X8    none -> FFFFC7CE / FF9C0006 bold     (Refund 329,  NEW BALANCE DOHA | WALLET)
+   X38   none -> FFFFEB9C / FF9C6500 bold     (Dispute 185, AL SULTAN MEDICAL CENTER)
+cells whose VALUE changed: 1
+   CD38  0 -> 5                               (the Refund Fee rule above)
+```
+
+Nothing else in either sheet was restyled or revalued. Web report shows the same two tinted cells.
+
+All three branches exercised on purpose-built fixtures, since the real file has no Reversal:
+
+| Case | Cell | Result |
+|---|---|---|
+| Reversal only (−200, with a +300 Reversal also present) | `L12` = 200 | Orange Accent 6 — the positive one excluded by the sign guard |
+| Refund 15 + Dispute 40 in one cell | `L5` = 55 | Bad, by precedence |
+| Subtotal and Grand Total | rows 6, 13, 16 | no tint |
+
+### A correction about method
+
+Earlier cell-by-cell diffs in this file reported a style comparison alongside values and formulas.
+That comparison was **inert**: `XLSX.readFile` does not populate `.s` without `cellStyles`, and even
+with it this build returned nothing, so every style compared as `undefined === undefined`. Those
+diffs verified values and formulas only. Style is now checked by unpacking the workbook and resolving
+`cellXfs` → `fills`/`fonts` directly, which is how the two rows above were established.
+
+### Regression
+
+3,264/3,264 export formulas evaluate to their cached values, 107/107 rate pairs, Card Type column
+unchanged, no page errors, control total 3,707 / 1,245,071.15.

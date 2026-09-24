@@ -361,6 +361,11 @@
   tbody td{ padding:8px 12px; border-bottom:1px solid var(--border); white-space:nowrap; }
   tbody td.num{ font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; text-align:right; }
   tbody td.num.muted{ color:var(--ink-muted); }
+  /* Refund cell tints, matching the exported workbook's fills: Excel's Bad and Neutral named styles
+     and Orange, Accent 6 from the same theme the report uses for Accent 4. */
+  tbody td.num.refund-refund{ background:#FFC7CE; color:#9C0006; font-weight:600; }
+  tbody td.num.refund-dispute{ background:#FFEB9C; color:#9C6500; font-weight:600; }
+  tbody td.num.refund-reversal{ background:#F79646; color:#3B2300; font-weight:600; }
   .report-input{
     width:84px; font-family:"IBM Plex Mono",monospace; font-size:12px; text-align:right;
     background:var(--surface-2); border:1px solid var(--border); border-radius:6px; padding:3px 6px; color:var(--ink);
@@ -1430,8 +1435,35 @@
   var BANK_DIFF_FLAG_THRESHOLD = 1;
   var BANK_DIFF_SECTION_MIN = 0.1;
 
-  function countRefunds(rows){
-    return rows.reduce(function(n, r){ return n + (txnClass(r.transactionType) === "refund" ? 1 : 0); }, 0);
+  // Transactions that carry the per-transaction Refund Fee. A Refund always has; a Dispute now does
+  // too, by a later rule change that made it behave the same as a Refund. A Reversal still carries
+  // none. Counted by transaction type alone, exactly the way a Refund is counted - so a Dispute whose
+  // amount is not negative is charged the fee even though the Refund COLUMN excludes it. No such row
+  // exists in any batch seen so far; if one appears, this is the line that decides it.
+  function countRefundFeeTxns(rows){
+    return rows.reduce(function(n, r){
+      var c = txnClass(r.transactionType);
+      return n + (c === "refund" || c === "dispute" ? 1 : 0);
+    }, 0);
+  }
+
+  // Which transaction type a non-zero Refund cell came from, so the export and the web report can
+  // colour it. The cell is an aggregate, so more than one type can land in it; precedence is
+  // Refund > Dispute > Reversal and a mixed cell takes the first of those present.
+  var REFUND_TYPE_ORDER = ["refund", "dispute", "reversal"];
+  function refundTypeOf(rows){
+    var seen = {};
+    rows.forEach(function(r){
+      var c = txnClass(r.transactionType);
+      if (c === "sale" || c === "unknown") return;
+      // Same guard the Refund column itself uses: a non-negative Dispute or Reversal never reaches it.
+      if ((c === "dispute" || c === "reversal") && toNumber(r.grossAmount) >= 0) return;
+      seen[c] = true;
+    });
+    for (var i = 0; i < REFUND_TYPE_ORDER.length; i++){
+      if (seen[REFUND_TYPE_ORDER[i]]) return REFUND_TYPE_ORDER[i];
+    }
+    return "";
   }
 
   // ---- Wallet split ----
@@ -1550,6 +1582,7 @@
 
     return {
       name: pg.name, gross: gross, bankRate: bankRate, bankFee: bankFee, actualBankFee: actualBankFee, merchantRate: merchantRate,
+      refundType: refund !== 0 ? refundTypeOf(groupRows) : "",
       noqoodyCharge: noqoodyCharge, clearedTxn: clearedTxn, txnCount: txnCount, ratePerTxn: ratePerTxn,
       noqoodyChargePerTxn: noqoodyChargePerTxn, refund: refund, profit: profit, internalTransfer: internalTransfer
     };
@@ -1581,7 +1614,7 @@
     // Gain For Bank Charges and the Payout Processing Fee apply ONCE per merchant. With up to four
     // rows (card main/below, wallet main/below) they sit on the merchant's first row, whichever that
     // is — so a merchant with only wallet activity still gets them.
-    var refundCount = countRefunds(g.rows);
+    var refundCount = countRefundFeeTxns(g.rows);
     var refundFee = g.masterEntry ? toNumber(g.masterEntry.refundFee) : 0;
     var baseGain = g.masterEntry ? toNumber(g.masterEntry.gainForBankCharge) : 0;
     var gain = isPrimary ? round2(baseGain + refundFee * refundCount) : 0;
@@ -3206,6 +3239,9 @@
       GROUP_SUBCOLS.forEach(function(col){
         var v = g[col.key];
         var cls = v === 0 ? "num muted" : "num";
+        // A non-zero Refund cell is tinted by the transaction type behind it, on merchant rows only:
+        // a subtotal sums several merchants and several types, so no single colour would be true.
+        if (!isSubtotal && col.key === "refund" && g.refundType) cls += " refund-" + g.refundType;
         html += '<td class="' + cls + '">' + formatGroupValue(col, v) + "</td>";
       });
     });
@@ -3535,8 +3571,13 @@
     accent3Light: { fill: "C6E0B4", font: null },
     // Accent 4 from the reference workbook's theme, and a light tint of it for the figures row.
     accent4: { fill: "8064A2", font: "FFFFFF" },
-    accent4Light: { fill: "E4DFEC", font: null }
+    accent4Light: { fill: "E4DFEC", font: null },
+    // Excel's Bad / Neutral named styles are above; this is "Orange, Accent 6" of the same theme the
+    // report already draws Accent 4 (8064A2) from, used for a Reversal.
+    accent6: { fill: "F79646", font: "3B2300" }
   };
+  // Refund cell fill per transaction type, as the user specified them by their Excel names.
+  var REFUND_TYPE_COLOR = { refund: "bad", dispute: "neutral", reversal: "accent6" };
   var HEADER_COLOR_BY_KEY = {
     number: "input", mid: "good", merchant: "bad",
     gross: "input", bankRate: "neutral", bankFee: "neutral", merchantRate: "input",
@@ -3752,7 +3793,8 @@
       var blockRows = [pushRow([], 0), pushRow([], 0)];   // header row, then the figures
       reconBlocks.push({ rows: blockRows, subtotalRowIdx: subRowIdx, rec: rec });
 
-      sections.push({ dataRows: sectionDataRows, mainRowSpans: mainRowSpans, subtotalRowIdx: subRowIdx });
+      sections.push({ dataRows: sectionDataRows, mainRowSpans: mainRowSpans, subtotalRowIdx: subRowIdx,
+                      lines: group.lines });
     });
 
     var grandRowIdx = pushRow(lineToRow(["GRAND TOTAL — ALL ACCOUNT CODES", "", ""], report.grandTotal.groups, report.grandTotal), 0);
@@ -3941,6 +3983,29 @@
       for (var c = 0; c < totalExportCols; c++){
         styleBoldCell(reportSheet, XLSX.utils.encode_cell({ r: r, c: c }));
       }
+    });
+
+    // Refund cells carry the color of the transaction type behind them - Bad for a Refund, Neutral
+    // for a Dispute, Orange Accent 6 for a Reversal - and only where the cell actually holds an
+    // amount. Merchant rows only: a subtotal sums several merchants and can mix types, so colouring
+    // one would assert something the figure does not support. Runs after the bolding above, which
+    // touches subtotal rows only, so nothing overwrites these fills.
+    sections.forEach(function(section){
+      (section.lines || []).forEach(function(line, li){
+        var rowIdx = section.dataRows[li];
+        if (rowIdx === undefined || !line.groups) return;
+        line.groups.forEach(function(g, gi){
+          if (!g || !g.refundType) return;
+          var colorKey = REFUND_TYPE_COLOR[g.refundType];
+          if (!colorKey) return;
+          var addr = XLSX.utils.encode_cell({ r: rowIdx, c: groupCol(gi, "refund") });
+          if (!reportSheet[addr]) return;
+          var z = reportSheet[addr].z;
+          styleCell(reportSheet, addr, colorKey);
+          reportSheet[addr].s.font.bold = true;
+          if (z) reportSheet[addr].z = z;   // styleCell replaces .s only, but keep the format explicit
+        });
+      });
     });
 
     // Reconciliation block: a header row and a figures row across the FINAL RECONCILIATION columns,
