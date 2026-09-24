@@ -1228,6 +1228,136 @@
     return keys;
   }
 
+  // ---- Same-business detection (SOFTPOS + PAX) ----
+  //
+  // One business can trade under two MIDs - a SOFTPOS record and a PAX POS record - and each one is
+  // a separate Master_List row, so the flat Gain For Bank Charge and Payout Processing Fee were
+  // charged twice. Nothing in the workbook states which MIDs belong together, so the pair is
+  // inferred, deliberately narrowly:
+  //
+  //   * the two merchant names must be related - equal, or one a prefix of the other, and
+  //   * one MID must be SOFTPOS and the other PAX.
+  //
+  // The SOFTPOS + PAX requirement is what makes this safe. On the real Master_List, name matching
+  // alone produces 15 candidate pairs, four of them wrong - it would merge GUCCI VENDOME with GUCCI
+  // VENDOME KIDS and WASEEF with WASEEF CARE, separate businesses that must each keep their own
+  // charge. Every one of those false pairs is PAX-vs-PAX or N910-vs-N910, so requiring one SOFTPOS
+  // side drops all of them and leaves exactly the one true pair. Two PAX MIDs are never merged: a
+  // merchant's second PAX terminal set is a separate branch that settles on its own.
+  //
+  // Every detected pair is listed in the report, because a missed pair (a name typed differently) or
+  // a wrong one both move money silently otherwise.
+  var POS_FIELD_CANDIDATES = {
+    mid: ["mid", "merchantid"],
+    platform: ["platform"],
+    model: ["model"]
+  };
+  // A name shorter than this is not trusted as a prefix: "awqaf" would otherwise attach itself to
+  // any longer name starting the same way.
+  var BUSINESS_NAME_MIN = 6;
+
+  function buildPosKindIndex(terminalRows){
+    var map = new Map();
+    if (!terminalRows || !terminalRows.length) return map;
+    var resolver = buildResolver(Object.keys(terminalRows[0]), POS_FIELD_CANDIDATES);
+    terminalRows.forEach(function(row){
+      var mid = norm(resolver.mid ? row[resolver.mid] : "");
+      if (!mid) return;
+      if (!map.has(mid)) map.set(mid, { softpos: false, pax: false });
+      var e = map.get(mid);
+      // SOFTPOS is matched on a prefix: the sheet has carried both "SOFTPOS" and "SOFTPOST".
+      if (/^softpos/.test(norm(resolver.model ? row[resolver.model] : ""))) e.softpos = true;
+      if (norm(resolver.platform ? row[resolver.platform] : "") === "pax") e.pax = true;
+    });
+    return map;
+  }
+
+  function namesRelated(a, b){
+    if (!a || !b) return false;
+    if (a === b) return true;
+    var shorter = a.length < b.length ? a : b;
+    if (shorter.length < BUSINESS_NAME_MIN) return false;
+    return a.indexOf(b) === 0 || b.indexOf(a) === 0;
+  }
+
+  // Groups Master_List rows into businesses, and works out the one Gain and one Fee each business
+  // carries. Rows that disagree on a non-zero value are NOT grouped - the app never invents which
+  // figure was meant; it reports the clash and leaves both rows charging as they did before.
+  function buildBusinessIndex(masterListRows, terminalRows){
+    var empty = { businessOf: new Map(), charge: new Map(), groups: [], conflicts: [] };
+    if (!masterListRows || !masterListRows.length) return empty;
+    var pos = buildPosKindIndex(terminalRows);
+    var resolver = buildResolver(Object.keys(masterListRows[0]), MASTER_FIELD_CANDIDATES);
+    var entries = [];
+    masterListRows.forEach(function(row){
+      var mid = norm(resolver.mid ? row[resolver.mid] : "");
+      var name = norm(resolver.merchantName ? row[resolver.merchantName] : "");
+      if (!mid || !name) return;
+      var kind = pos.get(mid) || { softpos: false, pax: false };
+      entries.push({
+        mid: mid,
+        displayMid: String(row[resolver.mid]),
+        name: name,
+        displayName: String(row[resolver.merchantName] === undefined ? "" : row[resolver.merchantName]).trim(),
+        softpos: kind.softpos, pax: kind.pax,
+        gain: toNumber(resolver.gainForBankCharge ? row[resolver.gainForBankCharge] : ""),
+        fee: toNumber(resolver.payoutProcessingFee ? row[resolver.payoutProcessingFee] : "")
+      });
+    });
+
+    var parent = entries.map(function(_, i){ return i; });
+    function find(i){ while (parent[i] !== i){ parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+    function union(i, j){ var a = find(i), b = find(j); if (a !== b) parent[b] = a; }
+    for (var i = 0; i < entries.length; i++){
+      for (var j = i + 1; j < entries.length; j++){
+        var a = entries[i], b = entries[j];
+        if (a.mid === b.mid) continue;
+        if (!namesRelated(a.name, b.name)) continue;
+        if (!((a.softpos && b.pax) || (b.softpos && a.pax))) continue;
+        union(i, j);
+      }
+    }
+
+    var buckets = new Map();
+    entries.forEach(function(e, i){
+      var root = find(i);
+      if (!buckets.has(root)) buckets.set(root, []);
+      buckets.get(root).push(e);
+    });
+
+    var index = { businessOf: new Map(), charge: new Map(), groups: [], conflicts: [] };
+    buckets.forEach(function(members, root){
+      var mids = {};
+      members.forEach(function(m){ mids[m.mid] = true; });
+      if (Object.keys(mids).length < 2) return;   // a single MID is its own business, as before
+      var gains = {}, fees = {};
+      members.forEach(function(m){
+        if (m.gain) gains[m.gain] = true;
+        if (m.fee) fees[m.fee] = true;
+      });
+      var gainVals = Object.keys(gains), feeVals = Object.keys(fees);
+      var group = {
+        key: "biz" + root,
+        members: members.map(function(m){ return { mid: m.mid, displayMid: m.displayMid, name: m.displayName,
+                                                   softpos: m.softpos, pax: m.pax }; }),
+        gain: gainVals.length ? toNumber(gainVals[0]) : 0,
+        fee: feeVals.length ? toNumber(feeVals[0]) : 0,
+        conflict: gainVals.length > 1 || feeVals.length > 1
+      };
+      if (group.conflict){
+        // Left ungrouped on purpose: charging one of two disagreeing figures would be a guess.
+        group.gainValues = gainVals.map(toNumber);
+        group.feeValues = feeVals.map(toNumber);
+        index.conflicts.push(group);
+        return;
+      }
+      members.forEach(function(m){ index.businessOf.set(m.mid, group.key); });
+      index.charge.set(group.key, group);
+      index.groups.push(group);
+    });
+    return index;
+  }
+
   function buildPaymentGroups(rows){
     if (!rows || !rows.length) return [];
     var headers = Object.keys(rows[0]);
@@ -1617,8 +1747,15 @@
     var refundCount = countRefundFeeTxns(g.rows);
     var refundFee = g.masterEntry ? toNumber(g.masterEntry.refundFee) : 0;
     var baseGain = g.masterEntry ? toNumber(g.masterEntry.gainForBankCharge) : 0;
+    var baseFee = g.masterEntry ? toNumber(g.masterEntry.payoutProcessingFee) : 0;
+    // Same-business pair: the flat Gain and Fee are the BUSINESS's, charged once on whichever of its
+    // lines carries them today. The Refund Fee below stays per MID - it follows the transactions.
+    if (g.businessCharge){
+      baseGain = g.businessCharge.suppress ? 0 : g.businessCharge.gain;
+      baseFee = g.businessCharge.suppress ? 0 : g.businessCharge.fee;
+    }
     var gain = isPrimary ? round2(baseGain + refundFee * refundCount) : 0;
-    var fee = (isPrimary && g.masterEntry) ? g.masterEntry.payoutProcessingFee : 0;
+    var fee = (isPrimary && g.masterEntry) ? baseFee : 0;
 
     var bankDifference = round2(totalBankFee - actualBankCharges);
 
@@ -1673,7 +1810,7 @@
     };
   }
 
-  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency, walletConfigured, txnFeeIndex, reconInputs, walletSectionKeys){
+  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency, walletConfigured, txnFeeIndex, reconInputs, walletSectionKeys, businessIndex){
     reconInputs = reconInputs || {};
     var merchantGroups = new Map();
     processed.forEach(function(row){
@@ -1728,6 +1865,55 @@
         merchantGroups.delete(key);
       }
     });
+
+    // Which line of a same-business pair carries the flat charges.
+    //
+    // The Gain For Bank Charge and the Payout Processing Fee belong to the BUSINESS, so they are
+    // applied once, on the business's line with the LOWEST Account Code that actually has
+    // transactions in this run. A SOFTPOS MID on Account Code 9 therefore carries them whenever it
+    // trades, and on a day it is silent they fall to the PAX line on 15 rather than being lost -
+    // which is what pinning them to one MID would do. A merchant with no transactions produces no
+    // group at all, so "has a line" is simply "is still in merchantGroups here".
+    //
+    // The per-transaction Refund Fee is NOT moved: a refund happens on a specific MID and stays
+    // costed there.
+    var businessPlacements = [];
+    if (businessIndex && businessIndex.businessOf && businessIndex.businessOf.size){
+      var activeByBusiness = new Map();
+      merchantGroups.forEach(function(g){
+        var key = businessIndex.businessOf.get(norm(g.mid));
+        if (!key) return;
+        if (!activeByBusiness.has(key)) activeByBusiness.set(key, []);
+        activeByBusiness.get(key).push(g);
+      });
+      activeByBusiness.forEach(function(list, key){
+        var charge = businessIndex.charge.get(key);
+        if (!charge) return;
+        // Lowest Account Code wins; an unassigned code sorts last so it never silently takes over.
+        list.sort(function(a, b){
+          var ca = toNumber(a.accountCode), cb = toNumber(b.accountCode);
+          if (!ca) ca = Infinity;
+          if (!cb) cb = Infinity;
+          return ca - cb;
+        });
+        var carrier = list[0];
+        list.forEach(function(g){
+          g.businessCharge = g === carrier
+            ? { suppress: false, gain: charge.gain, fee: charge.fee }
+            : { suppress: true, gain: 0, fee: 0 };
+        });
+        businessPlacements.push({
+          key: key,
+          members: charge.members,
+          carrierMid: carrier.mid,
+          carrierAccountCode: carrier.accountCode,
+          activeMids: list.map(function(g){ return String(g.mid); }),
+          gain: charge.gain,
+          fee: charge.fee,
+          fellBack: list.length > 1 && charge.members.length > list.length
+        });
+      });
+    }
 
     // Merchants are ordered A–Z by name, and a merchant's main and below-threshold rows are built
     // consecutively, so they stay together under that merchant wherever the report is grouped.
@@ -1929,6 +2115,8 @@
       unresolvedCount: unresolvedCount,
       excludedByFrequencyCount: excludedByFrequencyCount,
       txnFeeUsage: txnFeeUsage,
+      businessPlacements: businessPlacements,
+      businessConflicts: (businessIndex && businessIndex.conflicts) || [],
       walletConfigured: !!walletConfigured,
       walletSections: paymentGroups.map(function(pg, i){
         return merchantLines.some(function(l){ return l.isWallet && l.groups[i].txnCount > 0; });
@@ -3173,7 +3361,8 @@
     var txnFeeIndex = buildTxnFeeIndex(state.txnFeeRows);
     state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs,
                                              state.frequency, !!(state.result && state.result.walletConfigured), txnFeeIndex,
-                                             state.reconInputs, buildWalletSectionKeys(state.walletRulesRows));
+                                             state.reconInputs, buildWalletSectionKeys(state.walletRulesRows),
+                                             buildBusinessIndex(state.masterListRows, state.terminalMappingRows));
     renderPayoutReport(state.payoutReport);
     renderDataStrip();
     applyMerchantFilter();
@@ -3316,6 +3505,37 @@
       (report.unresolvedCount > 0 ? ("<br>" + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row and are excluded from this report.") : "") +
       (report.excludedByFrequencyCount > 0 ? ("<br>" + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency and are excluded from this report.") : "");
     body.appendChild(notice);
+
+    // Same-business pairs, and where the flat charges landed. This listing is not decoration: the
+    // pairing is inferred from the merchant name, so a name typed differently silently un-pairs a
+    // business and charges it twice. Seeing the pair each run is how that gets caught.
+    if ((report.businessPlacements && report.businessPlacements.length) ||
+        (report.businessConflicts && report.businessConflicts.length)){
+      var bizBox = document.createElement("div");
+      bizBox.className = "banner";
+      bizBox.style.margin = "0 20px 16px";
+      var bizHtml = "";
+      (report.businessPlacements || []).forEach(function(p){
+        var names = p.members.map(function(m){
+          return escapeHtml(m.name) + " " + escapeHtml(String(m.displayMid)) +
+                 " (" + (m.softpos ? "SOFTPOS" : m.pax ? "PAX" : "other") + ")";
+        }).join(" + ");
+        var silent = p.members.filter(function(m){ return p.activeMids.indexOf(String(m.mid)) === -1; });
+        bizHtml += "<div><strong>Same business (SOFTPOS + PAX):</strong> " + names +
+          " — Gain " + fmtAmount(p.gain) + " and Payout Fee " + fmtAmount(p.fee) +
+          " charged once, on Account Code " + escapeHtml(String(p.carrierAccountCode)) +
+          (silent.length ? (" (" + silent.map(function(m){ return escapeHtml(String(m.displayMid)); }).join(", ") +
+                            " had no transactions)") : "") + ".</div>";
+      });
+      (report.businessConflicts || []).forEach(function(c){
+        bizHtml += "<div class=\"bad\"><strong>Same-business pair NOT merged — values disagree:</strong> " +
+          c.members.map(function(m){ return escapeHtml(m.name) + " " + escapeHtml(String(m.displayMid)); }).join(" + ") +
+          " carry different Gain (" + c.gainValues.join(" / ") + ") or Payout Fee (" + c.feeValues.join(" / ") +
+          "). Both rows are charged separately until one figure is agreed.</div>";
+      });
+      bizBox.innerHTML = bizHtml;
+      body.appendChild(bizBox);
+    }
 
     // Every merchant whose Bank Difference passes the threshold, with the sections behind it. The
     // same section missing across many merchants points at a Bank_Cost cell, not at one merchant.

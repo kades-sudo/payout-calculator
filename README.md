@@ -1923,3 +1923,99 @@ diffs verified values and formulas only. Style is now checked by unpacking the w
 
 3,264/3,264 export formulas evaluate to their cached values, 107/107 rate pairs, Card Type column
 unchanged, no page errors, control total 3,707 / 1,245,071.15.
+
+---
+
+## Same-business (SOFTPOS + PAX) charged once — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** Rule and scope chosen by the user.
+
+### The problem
+
+One business can trade under two MIDs — a SOFTPOS record and a PAX POS record — and each is its own
+`Master_List` row. "Once per merchant" meant once per *row*, so the flat **Gain For Bank Charge** and
+**Payout Processing Fee** were charged twice. Pinning them to one row instead is worse: on a day that
+MID has no transactions it produces no line at all, and the charge disappears.
+
+### The rule
+
+Two `Master_List` rows are one business when **both** hold:
+
+- their merchant names are related — equal, or one a prefix of the other (normalised, minimum 6
+  characters so a short name cannot attach itself to a longer one), **and**
+- one MID is **SOFTPOS** and the other **PAX**, read from `Terminal_Mapping` (`Model` matched on the
+  `softpos` prefix, since the sheet has carried both `SOFTPOS` and `SOFTPOST`; `Platform` = `PAX`).
+
+The flat Gain and Fee are then applied **once**, on the business's line with the **lowest Account
+Code that has transactions in this run** — so a SOFTPOS MID on Account Code 9 carries them whenever
+it trades, and falls back to the PAX line on 15 on a day it is silent. The per-transaction **Refund
+Fee is not moved**: a refund happens on a specific MID and stays costed there.
+
+Two PAX MIDs are never merged. A second PAX terminal set is a separate branch that settles on its
+own — `ARAB INTERNATIONAL ACADEMY – LUSAIL` / `– DOHA`, `SHABAL ALFGAN … 1 / 2`, `PRESTIGE AUTO
+CLINIC /01` all keep their own charge, by design.
+
+### Why the SOFTPOS + PAX requirement is what makes it safe
+
+Name matching alone produces **15** candidate pairs on the real Master_List, four of them wrong — it
+would merge `GUCCI VENDOME` with `GUCCI VENDOME KIDS`, `GUCCI VILLAGIO` with `GUCCI VILLAGIO KIDS`,
+`WASEEF` with `WASEEF CARE`, `Awqaf` with `AWQAF GENERAL DIRECTORATE`. Every one of those is
+PAX-vs-PAX or N910-vs-N910. Requiring one SOFTPOS side drops all 14 others and leaves exactly one
+true pair:
+
+```
+After requiring ONE side SOFTPOS and the other PAX: 1 pair
+   COCOMAS RESTAURANT (100005269900294, PAX, Acct 15)
+ + COCOMAS RESTAURANT (100005269900318, SOFTPOS, Acct 9)
+```
+
+### Disagreeing values are not merged
+
+If the rows of a business carry **different** non-zero Gain or Fee figures, they are left ungrouped
+and charged as before, and the clash is named. The app never picks between two figures.
+
+### Verified
+
+Zero-diff on the real data, because both COCOMAS rows carry 0/0 today:
+
+```
+SHEET DAILY PAYOUT        differing cells: 0
+SHEET Process Raw Details differing cells: 0
+IDENTICAL OOXML
+```
+
+Behaviour proved on fixtures giving COCOMAS `Gain 10 / Fee 5`, against the previous build:
+
+| Scenario | Old code | New code |
+|---|---|---|
+| both MIDs trade | Acct 9: 10/5 **and** Acct 15: 10/5 — **total 20/10** | Acct 9: **10/5**, Acct 15: 0/0 |
+| SOFTPOS silent | Acct 15: 10/5 | Acct 15: **10/5** — fallback, nothing lost |
+| values disagree (10 vs 12) | — | **not merged**, both charged, clash reported |
+
+### The listing is part of the feature
+
+The pairing is inferred from the merchant name, so a name typed differently silently un-pairs a
+business and charges it twice. Every detected pair is printed on every run:
+
+> Same business (SOFTPOS + PAX): COCOMAS RESTAURANT 100005269900294 (PAX) + COCOMAS RESTAURANT
+> 100005269900318 (SOFTPOS) — Gain 10.00 and Payout Fee 5.00 charged once, on Account Code 15
+> (100005269900318 had no transactions).
+
+### What it rests on — still the user's to maintain
+
+- the SOFTPOS record's name must contain the PAX record's name;
+- `Platform` stays `PAX` and `Model` stays `SOFTPOS…`.
+
+A future SOFTPOS merchant whose name happens to prefix-match an unrelated PAX merchant would be
+merged wrongly. The listing is what makes any of these visible the same run rather than a month on.
+
+### Still outstanding in the workbook
+
+- `Wallet_Rules` row 11 still reads **`CHINAY UNION PAY WALLET`** — the typo is unfixed, so a
+  prefix-matched China Union Pay transaction still lands in Others.
+- MID `100005269900372` has an active SOFTPOS terminal on Account Code 9 and **no Master_List row**.
+
+### Regression
+
+3,264/3,264 export formulas evaluate to their cached values, 107/107 rate pairs, no page errors,
+control total 3,707 / 1,245,071.15.
