@@ -2019,3 +2019,89 @@ merged wrongly. The listing is what makes any of these visible the same run rath
 
 3,264/3,264 export formulas evaluate to their cached values, 107/107 rate pairs, no page errors,
 control total 3,707 / 1,245,071.15.
+
+---
+
+## Txn_Fee and Rate Per Trnx now ADD UP — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** Rule stated by the user.
+
+### The rule
+
+Two separate per-transaction charges that stack, instead of one replacing the other:
+
+```
+normal line  ->  Txn_Fee tier
+below  line  ->  Txn_Fee tier + Rate Per Trnx
+```
+
+| Column | Means | Applies to |
+|---|---|---|
+| `Txn_Fee` tier | the merchant's **flat rate** | every cleared Sale, per card type |
+| `Rate Per Trnx` | the **below-threshold extra** | the below line only |
+| `Below Amount Rule` | where the line splits | — |
+
+A merchant with a flat 1.00 and a below extra of 0.50 pays **1.00** normally and **1.50** below. One with
+only a below extra pays **0** normally and **0.50** below. Either column may be absent.
+
+`Rate Per Trnx` is one number in `Master_List` but is charged **per card type**, against each
+section's own cleared count — as it already was.
+
+### What changed in the code
+
+```js
+// was: a tier REPLACED Rate Per Trnx, and Scope gated it
+if (!tier) return isBelow ? masterEntry.ratePerTrnx : 0;
+if (tier.scope === TXN_FEE_SCOPE_BELOW && !isBelow) return 0;
+return tier's column;
+
+// now: they add
+var flat = tier ? tier's column : 0;
+var belowExtra = isBelow ? toNumber(masterEntry.ratePerTrnx) : 0;
+return round2(flat + belowExtra);
+```
+
+`Txn_Fee.Scope` is **no longer consulted** — the tier applies to normal and below lines alike, and
+"below only" is now expressed by leaving the tier at zero and setting `Rate Per Trnx`. Scope is still
+parsed so a workbook carrying it is not rejected. `TXN_FEE_SCOPE_BELOW` was removed.
+
+`txnFeeUsage` was reworked too: a merchant can now use both charges, so it can count in both buckets
+rather than being forced into one.
+
+### Impact on the current data — the numbers DID move
+
+`Txn_Fee` ID 2 still holds `0.5 / 0.5 / 0.5 / 0.5` with `Scope = Below`. Under the new rule that 0.5
+becomes a flat rate charged on every line **as well as** the merchant's `Rate Per Trnx` of 0.5:
+
+```
+MADHURA RESTAURANT | BELOW 25             charge/txn  19.00 ->  38.00
+MADHURA RESTAURANT | WALLET                            0.00 ->   1.50
+MADHURA RESTAURANT | WALLET | BELOW 25                 4.00 ->   8.00
+SUBTOTAL — Account Code 4                             23.00 ->  47.50
+GRAND TOTAL                                           29.00 ->  53.50   (+24.50)
+
+Noqoody Profit  3403.61 -> 3428.11      Internal Transfer  820783.60 -> 820759.10
+```
+
+104 cells differ, all downstream of those rates. `Process Raw Details` is untouched.
+
+**This is the rule working, not a defect** — but it is only correct once `Txn_Fee` ID 2 is set to
+what a *flat* rate should be. Eighteen merchants point at ID 2 (3 Daily, 15 Weekly) and all 22
+below-rule merchants carry `Rate Per Trnx` 0.5. Zeroing ID 2's card columns returns those figures to
+23.00 / 29.00 with the 0.50 coming from `Rate Per Trnx`, where the user wants it. **Outstanding —
+the workbook has not been changed yet.**
+
+### A correction to how diffs were measured in this file
+
+The comparison script used for several earlier entries compared a **formula cell by its formula text
+only**, so a cell whose formula was unchanged but whose cached value moved compared as equal. Re-run
+with both compared, the refund-fee change recorded above as *"1 value cell changed (CD38)"* is
+actually **19 cells**: `CD38` is the only input that changed, and the other 18 are the deducted
+transfers, payouts, subtotals and reconciliation figures that follow from it. No conclusion changes —
+the intended effect and its arithmetic were right, and `verify-formulas` independently confirms every
+cached value equals its formula — but the count quoted was wrong. Diffs now compare `[formula, value]`.
+
+### Regression
+
+3,264/3,264 export formulas evaluate to their cached values, control total 3,707 / 1,245,071.15,
+Process Raw Details unchanged.

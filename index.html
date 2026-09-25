@@ -1140,7 +1140,6 @@
   // cell says when the fee bites — "Below" only on Sales under the merchant's Below Amount Rule
   // (what the legacy Rate Per Trnx column did), "All" on every Sale. A blank Scope means "All": a
   // blank cell should read as the plain meaning of a contract, not as a special case.
-  var TXN_FEE_SCOPE_BELOW = "below";
   var WALLET_TXNFEE_CANDIDATES = ["wallet", "walletfee", "wallettxnfee"];
 
   function buildTxnFeeIndex(rows){
@@ -1631,23 +1630,36 @@
 
   // The per-transaction fee for one payment group on one report line.
   //
-  // A merchant's Txn Fee ID points at a Txn_Fee tier, which carries a fee per card type and a Scope.
-  // Wallet rows read the tier's general Wallet column, the same way they read one general wallet
-  // rate and one general wallet bank cost.
+  // Two separate charges, and they ADD UP rather than replacing one another:
   //
-  // When Txn Fee ID is blank the legacy merchant-level Rate Per Trnx column still applies, on the
-  // below-threshold line only, exactly as before. That fallback is deliberate: with 269 merchants,
-  // dropping the old column outright would turn every unfilled row's fee silently into zero.
-  // renderTxnFeeStatus reports how many merchants still depend on it, so it can be retired once
-  // that count reaches zero rather than living on as a second source of truth.
+  //   Txn_Fee tier      the merchant's flat rate, on EVERY cleared Sale, per card type.
+  //   Rate Per Trnx     the below-threshold extra, on the BELOW line only.
+  //
+  //   normal line  ->  tier
+  //   below line   ->  tier + Rate Per Trnx
+  //
+  // So a merchant with a flat 1.00 and a below extra of 0.50 pays 1.00 normally and 1.50 below,
+  // and a merchant with only a below extra pays 0 normally and 0.50 below. Either column may be
+  // absent; a missing one simply contributes nothing.
+  //
+  // Rate Per Trnx is one number in Master_List but is charged PER CARD TYPE, against each section's
+  // own cleared count - the same way the tier's per-card-type columns are.
+  //
+  // Txn_Fee's Scope column is no longer consulted: the tier applies to normal and below lines alike,
+  // and "below only" is now expressed by leaving the tier at zero and setting Rate Per Trnx. Scope
+  // is still parsed so a workbook that carries it is not rejected, and so it can be shown.
+  //
+  // Wallet rows read the tier's general Wallet column, the same way they read one general wallet
+  // rate - except in sections with no wallet variant (AMEX, JCB, China UnionPay), which keep their
+  // own column. That is decided by the caller, which passes walletPricing rather than isWallet.
   function resolveRatePerTxn(masterEntry, pg, isBelow, isWallet, txnFeeIndex){
     if (!masterEntry) return 0;
     var tier = txnFeeIndex ? txnFeeIndex.get(norm(masterEntry.txnFeeId)) : null;
-    if (!tier) return isBelow ? masterEntry.ratePerTrnx : 0;
-    if (tier.scope === TXN_FEE_SCOPE_BELOW && !isBelow) return 0;
-    return toNumber(isWallet
+    var flat = tier ? toNumber(isWallet
       ? pickByCandidates(tier.raw, WALLET_TXNFEE_CANDIDATES)
-      : (pg.txnFeeColumn ? getByNormalizedKey(tier.raw, pg.txnFeeColumn) : ""));
+      : (pg.txnFeeColumn ? getByNormalizedKey(tier.raw, pg.txnFeeColumn) : "")) : 0;
+    var belowExtra = isBelow ? toNumber(masterEntry.ratePerTrnx) : 0;
+    return round2(flat + belowExtra);
   }
 
   function computePaymentGroupCell(rows, masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled, txnFeeIndex, walletSectionKeys){
@@ -1931,11 +1943,13 @@
     sortedGroups.forEach(function(g){
       var me = g.masterEntry;
       var feeId = me && me.txnFeeId !== undefined && me.txnFeeId !== null ? String(me.txnFeeId).trim() : "";
-      if (feeId !== ""){
-        if (txnFeeIndex && txnFeeIndex.get(norm(feeId))) txnFeeUsage.tier++;
-        else txnFeeUsage.missingTier[feeId] = (txnFeeUsage.missingTier[feeId] || 0) + 1;
-      } else if (me && toNumber(me.ratePerTrnx) > 0) txnFeeUsage.legacy++;
-      else txnFeeUsage.none++;
+      var hasTier = feeId !== "" && txnFeeIndex && !!txnFeeIndex.get(norm(feeId));
+      var hasBelowExtra = !!(me && toNumber(me.ratePerTrnx) > 0 && toNumber(me.belowAmountRule) > 0);
+      if (feeId !== "" && !hasTier) txnFeeUsage.missingTier[feeId] = (txnFeeUsage.missingTier[feeId] || 0) + 1;
+      // The two charges stack, so a merchant can count in both buckets.
+      if (hasTier) txnFeeUsage.tier++;
+      if (hasBelowExtra) txnFeeUsage.legacy++;
+      if (!hasTier && !hasBelowExtra) txnFeeUsage.none++;
 
       var threshold = g.masterEntry ? g.masterEntry.belowAmountRule : 0;
       var cardRows = [], walletRows = [];
