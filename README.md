@@ -2213,3 +2213,58 @@ NEW BALANCE carries `gain 9 / fee 4` once, on its Account Code 4 line; its AMEX 
   `Transaction Reference Number` is unique per row and could back one if wanted.
 - The `Wallet_Rules` `CHINAY` typo is **fixed** in this Masterlist; MID `100005269900372`
   (ALMANZAR TRADING, SOFTPOS on Account Code 9) now has a Master_List row.
+
+### AMEX: refunds by sign, and merging onto an existing Account Code 15 line
+
+Three refinements to the AMEX handling above.
+
+**1. A refund is a NEGATIVE amount.** Every sample row is `Record Type = CREDIT`, so the sign is what
+the app reads: `Transaction Amount < 0` → the row is a **Refund**. Record Type is still checked, but
+only so an unfamiliar one is reported; it no longer decides anything. An AMEX refund then behaves
+exactly like an OMS one — excluded from Gross, its absolute value summed into the Refund column, and
+carrying the merchant's Refund Fee under the rule set earlier.
+
+**2. The standalone line appears only where there is AMEX.** Merchant groups are built from
+transactions, so a merchant with no AMEX row produces no AMEX line. Confirmed on both runs.
+
+**3. A redirected AMEX merges onto the merchant's existing Account Code 15 line** when one exists,
+rather than forming a second line. `NEW BALANCE DOHA` (Account Code 4) and `NEW BALANCE DOHA QNB`
+(Account Code 15) are the same business, so the AMEX sums onto the QNB line:
+
+```
+NEW BALANCE DOHA QNB   AMEX gross 4,362.50   = 3,563.50 (its own) + 799.00 (from Account Code 4)
+```
+
+With **no** destination on 15 the row keeps its own identity as a standalone `| AMEX` line — verified
+on a Weekly run, where `ELC EYEWEAR TRADING | AMEX` carries 8,957.00 under Account Code 15.
+
+Destination matching is by name, exact or prefix (minimum 6 normalised characters). Prefix matching
+is unsafe across the whole Master_List — it merges `GUCCI VENDOME` with `GUCCI VENDOME KIDS` — but it
+only ever runs against the 29 merchants whose terminals sit on Account Code 9, 4 or 5, and in that
+scope it yields **a single destination or none, never two** (5 exact, 1 prefix, 23 none, 0 ambiguous).
+A merchant with more than one candidate is left standalone and reported.
+
+Every merge that actually happens is listed on screen, with the row count, both merchant names and
+both MIDs — along with the refund count, unmatched terminals, Acquirer-id mismatches and any
+unrecognised Record Type.
+
+### Verified
+
+```
+OMS-only file vs the previous build:  0 differing cells in both sheets
+
+Daily, two tabs, no refunds : 3,747 rows  total 1,293,593.65  AMEX 48,522.50
+Daily, two tabs, 3 refunds  : 3,747 rows  total 1,290,377.15  AMEX 45,306.00
+  (delta 3,216.50 = 2 x the 1,608.25 flipped negative — correct)
+
+formulas: 3,264/3,264 (Daily) and 6,057/6,057 (Weekly) evaluate to their cached values
+```
+
+Refunds landing correctly:
+
+| Line | AMEX gross | Refund | Cleared |
+|---|---|---|---|
+| KUDI CAFE | 334.00 | 26.00 | 18 |
+| NEW BALANCE DOHA QNB | 2,780.25 | 1,582.25 | 5 |
+
+1,582.25 = 908.00 + 674.25, the two flipped rows on that merchant; gross falls by exactly that.
