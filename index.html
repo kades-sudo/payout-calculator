@@ -2391,6 +2391,11 @@
     // Merchants are ordered A–Z by name, and a merchant's main and below-threshold rows are built
     // consecutively, so they stay together under that merchant wherever the report is grouped.
     var merchantLines = [];
+    // Merchants dropped for a negative Total Transfer, and the groups that survived. The survivors
+    // are what every later count reads, so the dashboard's own reconciliation still balances against
+    // the report instead of failing on transactions that are no longer in it.
+    var excludedNegative = [];
+    var reportedGroups = [];
     var sortedGroups = Array.from(merchantGroups.values()).sort(function(a, b){
       return String(a.merchantName || "").localeCompare(String(b.merchantName || ""), undefined, { sensitivity: "base" });
     });
@@ -2454,6 +2459,42 @@
       // Total Transfer sums every row of the merchant and sits on the first one.
       built[0].totalTransfer = round2(sumBy(built, function(l){ return l.merchantPayout; }));
       built[0].difference = round2(built[0].totalTransfer - built[0].portalAmount);
+
+      // A merchant whose Total Transfer comes out NEGATIVE is dropped from the payout report.
+      //
+      // It happens when the flat charges outweigh a tiny gross: three sales of 1.00 against a Gain
+      // of 8.00 leaves -5.00, and there is no such thing as a transfer of minus five - the bank file
+      // would reject it and the merchant is owed nothing. Real example from a Weekly batch: UMM SAID
+      // LAUNDRY, one sale of 6.00 against a Gain of 8.00, Total Transfer -2.09.
+      //
+      // The test is on the MERCHANT's Total Transfer, never on a single line, and that distinction is
+      // load-bearing. FALAFEL AL HUDA CAFETERIA has a BELOW line at -3.58 carrying the whole Gain and
+      // a wallet line at +20.54: the merchant is owed 16.96 and must stay. Excluding on a negative
+      // LINE would have withheld a payout that is genuinely due.
+      //
+      // Nothing is silently dropped: every excluded merchant is listed with its figures, and its
+      // transactions stay in Process Raw Details, which remains the full record of the batch.
+      var merchantTotal = built[0].totalTransfer;
+      if (merchantTotal < 0){
+        excludedNegative.push({
+          mid: g.mid,
+          merchantKey: g.merchantKey,
+          merchantName: g.merchantName,
+          accountCode: g.accountCode,
+          lines: built.length,
+          txnCount: g.rows.length,
+          clearedTxn: sumBy(built, function(l){ return sumBy(l.groups, function(c){ return c.clearedTxn; }); }),
+          gross: round2(sumBy(built, function(l){ return sumBy(l.groups, function(c){ return c.gross; }); })),
+          refund: round2(sumBy(built, function(l){ return sumBy(l.groups, function(c){ return c.refund; }); })),
+          internalTransfer: round2(sumBy(built, function(l){ return l.totalInternalTransfer; })),
+          gain: round2(sumBy(built, function(l){ return l.gainForBankCharge; })),
+          fee: round2(sumBy(built, function(l){ return l.payoutProcessingFee; })),
+          profit: round2(sumBy(built, function(l){ return l.totalProfit; })),
+          totalTransfer: merchantTotal
+        });
+        return;   // no lines, and the group is left out of every count below
+      }
+      reportedGroups.push(g);
       built.forEach(function(l){ merchantLines.push(l); });
     });
 
@@ -2466,7 +2507,7 @@
     var unknownTxnTypeMap = new Map();
     var reportedSaleTxnCount = 0;
     var reportedTxnCount = 0;
-    sortedGroups.forEach(function(g){
+    reportedGroups.forEach(function(g){
       g.rows.forEach(function(r){
         var cls = txnClass(r.transactionType);
         reportedTxnCount++;
@@ -2620,6 +2661,8 @@
       unresolvedCount: unresolvedCount,
       excludedByFrequencyCount: excludedByFrequencyCount,
       txnFeeUsage: txnFeeUsage,
+      excludedNegative: excludedNegative,
+      excludedNegativeTxnCount: sumBy(excludedNegative, function(e){ return e.txnCount; }),
       specialRateCodes: Array.from(specialRateCodes),
       specialRateLines: specialRateLines,
       specialRateUnpriced: specialRateUnpriced,
@@ -4244,6 +4287,40 @@
         feeNotice.innerHTML = bits.join("<br>");
         body.appendChild(feeNotice);
       }
+    }
+
+    // Merchants withheld for a negative Total Transfer. Listed in full, with the figures that made
+    // each one negative, because this is money NOT being paid and a charge NOT being collected -
+    // both need to be visible on the run that decided it, not discovered in a reconciliation later.
+    if (report.excludedNegative && report.excludedNegative.length){
+      var negBox = document.createElement("div");
+      negBox.className = "banner warn";
+      negBox.style.margin = "0 20px 16px";
+      var negGain = round2(sumBy(report.excludedNegative, function(e){ return e.gain + e.fee; }));
+      var negTotal = round2(sumBy(report.excludedNegative, function(e){ return e.totalTransfer; }));
+      var nh = "<strong>" + report.excludedNegative.length + " merchant" +
+        (report.excludedNegative.length === 1 ? "" : "s") + " withheld — Total Transfer would be negative.</strong> " +
+        report.excludedNegativeTxnCount + " transaction(s), " + fmtAmount(Math.abs(negTotal)) +
+        " short in total. The flat charges outweigh the gross, so there is nothing to pay out; a transfer " +
+        "cannot be negative. They are excluded from every figure in this report and from the export, and " +
+        "they remain in Process Raw Details." +
+        "<br><strong>" + fmtAmount(negGain) + " of Gain and Payout Processing Fee goes uncollected</strong> " +
+        "by excluding them — decide separately whether that carries to the next run." +
+        "<ul class=\"bank-diff-list\">";
+      report.excludedNegative.forEach(function(e){
+        nh += "<li><strong>" + escapeHtml(e.merchantName || "(unnamed)") + "</strong> " + escapeHtml(String(e.mid)) +
+          " · Account Code " + escapeHtml(String(e.accountCode)) + " — " +
+          e.clearedTxn + " cleared txn, gross <code>" + fmtAmount(e.gross) + "</code>" +
+          (e.refund ? ", refund <code>" + fmtAmount(e.refund) + "</code>" : "") +
+          ", transfer <code>" + fmtAmount(e.internalTransfer) + "</code> less Gain <code>" + fmtAmount(e.gain) +
+          "</code>" + (e.fee ? " and Fee <code>" + fmtAmount(e.fee) + "</code>" : "") +
+          " = <code>" + fmtAmount(e.totalTransfer) + "</code>" +
+          (e.refund ? " <em>— driven by a refund, not by a small gross: check this one before withholding.</em>" : "") +
+          "</li>";
+      });
+      nh += "</ul>";
+      negBox.innerHTML = nh;
+      body.appendChild(negBox);
     }
 
     // Account Code 5 prices from the Card Type column, so that column is now load-bearing for those

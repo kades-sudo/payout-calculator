@@ -2489,3 +2489,87 @@ that turn up, so an empty section has none. Gross and Bank Fee are 0 alongside i
   Fee is already scoped.
 - `CHINA UNION | 2.50%` parses, so China UnionPay is covered — but no Account Code 5 merchant has
   taken one yet.
+
+---
+
+## Merchants with a negative Total Transfer are withheld — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** Rule stated by the user.
+
+A merchant whose **Total Transfer** comes out negative is dropped from the payout report. It happens
+when the flat charges outweigh a tiny gross — three sales of 1.00 against a Gain of 8.00 leaves
+-5.00, and there is no such thing as a transfer of minus five.
+
+### The test is on the MERCHANT, never on a line — and that distinction is load-bearing
+
+The obvious implementation is "drop any line whose Merchant Payout is negative". On the real Weekly
+batch that would have been **wrong**:
+
+```
+FALAFEL AL HUDA CAFETERIA | BELOW 25        gross  5.00   gain 4.00  fee 4.00   payout  -3.58
+FALAFEL AL HUDA CAFETERIA | WALLET | BELOW  gross 23.00   gain 0.00  fee 0.00   payout  +20.54
+                                                                    Total Transfer  =   16.96
+```
+
+One line is negative because it carries the merchant's whole flat charge; the merchant is owed 16.96
+and must be paid. A line-level rule would have withheld a genuine payout. The rule reads
+`built[0].totalTransfer`, which is the sum across every line the merchant produced.
+
+### What was actually withheld
+
+Three merchants in the Weekly batch, all the small-gross case, no refunds involved:
+
+```
+UMM SAID LAUNDRY              1 cleared txn  gross  6.00  transfer  5.91  less Gain 8.00  =  -2.09
+AL-SAMEL TRADING | WALLET     1 cleared txn  gross  5.00  transfer  4.90  less Gain 8.00  =  -3.10
+ALTASSISIYA TRADING …         1 cleared txn  gross  5.00  transfer  4.90  less Gain 1.00
+                                                                          and Fee  4.00  =  -0.10
+```
+
+### A refund-driven negative is flagged, not silently equated
+
+A negative caused by a large refund is a different thing from one caused by a small gross — the
+merchant genuinely owes money back. Both are withheld, because neither can be transferred, but the
+listing says which is which. Negative test, injecting a refund larger than a merchant's own sales:
+
+```
+GUJJU FOODZ 100005269900186 · Account Code 15 — 2 cleared txn, gross 530.25, refund 630.25,
+transfer -109.57 less Gain 15.00 = -124.57 — driven by a refund, not by a small gross:
+check this one before withholding.
+```
+
+### Nothing disappears quietly
+
+Every withheld merchant is listed with the figures that made it negative, and the panel states the
+charge that goes uncollected as a result — **21.00 of Gain and Payout Processing Fee** on this batch.
+Whether that carries to the next run is a business decision the app does not make.
+Their transactions stay in `Process Raw Details (OMS)`, which remains the full record of the batch.
+
+### Verified
+
+Weekly, before and after:
+
+| | before | after | delta |
+|---|---|---|---|
+| Total Noqoody Profit | 1,070.65 | 1,070.54 | −0.11 |
+| Bank Charges | 2,171.65 | 2,171.47 | −0.18 |
+| Total Internal Transfer | 161,750.49 | 161,734.78 | −15.71 |
+| Gain For Bank Charges | 705.00 | 688.00 | **−17.00** |
+| Payout Processing Fee | 372.00 | 368.00 | **−4.00** |
+| Merchant Payout / Total Transfer | 160,673.49 | 160,678.78 | **+5.29** |
+
+The payout total *rises* by 5.29 — the three negatives were dragging it down.
+
+- Report rows 228 → 225. FALAFEL keeps both its lines.
+- `Process Raw Details (OMS)` unchanged at **3,707** rows; the AMEX sheet unchanged at 40.
+- **Daily: 0 differing cells.** No Daily merchant goes negative, so the change is inert there.
+- 7,996/7,996 export formulas evaluate to their cached values.
+- The dashboard's own reconciliation still balances. Its transaction counts read the surviving
+  groups (`reportedGroups`), not every group — counting withheld transactions against a report that
+  no longer contains them would have failed the check on every run with an exclusion.
+
+### Open
+
+- The rule has no threshold: a merchant at −0.10 is withheld exactly as one at −5.00. That is
+  deliberate (a transfer cannot be negative at any size) but it is a policy, not a fact.
+- Whether the uncollected Gain and Payout Processing Fee carry into the next run is not modelled.
