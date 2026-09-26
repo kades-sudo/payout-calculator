@@ -2325,3 +2325,167 @@ it was called out for carrying several merchants under different Merchant Keys �
 index was still written keyed on MID. It went unnoticed because the Masterlist of that day had only a
 handful of merchants on a shared MID and none of them paired; this Masterlist has 31 on one MID with
 seven pairs among them.
+
+---
+
+## AMEX on its own sheet; Process Raw Details is OMS-only — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** Layout chosen by the user.
+
+The payout workbook was two sheets, and `Process Raw Details` held OMS and AMEX rows together
+because AMEX is concatenated into the same processed set. It is now three:
+
+| Sheet | Contents | Rows (test batch) |
+|---|---|---|
+| `DAILY PAYOUT` / `WEEKLY PAYOUT` | unchanged | — |
+| `Process Raw Details (OMS)` | OMS rows only, AMEX filtered on `_amex` | 3,707 |
+| `AMEX` | the submission report as uploaded, 33 columns, + 5 resolved | 40 |
+
+**The control total changed.** `Process Raw Details` was 3,747 (3,707 OMS + 40 AMEX). The OMS sheet
+is now 3,707 — the standing OMS invariant — with the AMEX rows beside it.
+
+### The resolved columns
+
+`Merchant` · `MID (resolved)` · `Account Code (applied)` · `Placement` · `Match Status`
+
+Without them the sheet cannot be traced: the AMEX file carries no merchant name and no usable MID, so
+"why is this row under Account Code 15" is otherwise a manual Terminal_Mapping cross-reference.
+`Placement` reads `Merged onto existing 15 line`, `Standalone 15 line` or `Own account code`.
+
+### Joined by identity, not by a key
+
+`normalizeAmexRows` keeps a reference to the raw row it was built from (`_amexRaw`). A join on
+`Transaction Reference Number` would have worked on both sample files (40/40 distinct, no blanks) but
+a repeated reference in a future file would silently attach the wrong resolution. Rows the pipeline
+drops (blank Terminal Id — how the file's trailing line reads) are still listed, marked
+`Skipped — blank Terminal Id`, rather than vanishing from a sheet that claims to be the raw file.
+
+Identifier columns are forced to text. `Acquirer Merchant Id` `005269900113` keeps its leading zeros
+instead of reaching Excel as a bare number in scientific notation — the defect that already forced
+Merchant ID to text in Process Raw Details.
+
+### Verified
+
+- Sheets: `["WEEKLY PAYOUT", "Process Raw Details (OMS)", "AMEX"]`
+- OMS sheet is **cell-for-cell identical** to the old combined sheet minus its 40 AMEX rows
+  (0 differing cells, identical header)
+- AMEX sheet: 40 rows × 38 columns; `Match Status` all `Matched`;
+  `Placement` 32 own / 7 standalone / 1 merged; `Account Code (applied)` 39×15, 1×16
+- No AMEX tab uploaded → **no AMEX sheet**, not an empty one
+- The frozen-header patch found the PRD sheet by a literal `"Process Raw Details"`, which the rename
+  would have silently broken. It now resolves both flat sheets from the same constants they are
+  appended with, and both carry `<pane ySplit="1" … state="frozen"/>` plus an AutoFilter.
+
+---
+
+## Account Code 5 is costed from the Card Type column, not Bank_Cost — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** Rule stated by the user; precedence proven against the bank.
+
+Most merchants are costed from `Bank_Cost` by Cost ID. Account Code 5 is not: QNB prices it per card
+type, and the rate is written into the `Rate | High` column of Card Type Classification — the same
+column the Card Type display reads.
+
+### Proven against QNB's own Commission field
+
+All three Account Code 5 merchants carry **Cost ID 5**, which in `Bank_Cost` is *"Charity"*,
+Credit **1.10%**. That is not what the bank charged:
+
+| Terminal | Merchant | Card | Gross | Bank charged | Card Type rule | Bank_Cost ID 5 |
+|---|---|---|---|---|---|---|
+| 77711102 | CARRIER | OFF-US Visa | 550.00 | **9.08** | 9.08 ✅ | 6.05 ✗ |
+| 77711103 | STS | OFF-US Visa | 873.00 | **14.40** | 14.40 ✅ | 9.60 ✗ |
+| 10008901 | RAINBOW | OFF-US NAPS | 500.00 | **1.50** | 1.50 ✅ | 3.00 ✗ |
+| 77711102 | CARRIER | OFF-US NAPS | 1,405.00 | **1.50** | 1.50 ✅ | 8.43 ✗ |
+
+4 of 4 exact. Cost ID 5 is wrong on every one. That is how the precedence was settled rather than
+assumed.
+
+### The percent sign is load-bearing
+
+`NAPS | 1.5` is the only label in the sheet written **without** a `%`, and NAPS is the only scheme the
+bank charges as a **flat amount per transaction** rather than a percentage of the sale. Read as 1.5%
+those two NAPS rows would have been costed **28.58 instead of 3.00**.
+
+`Special_Rate`'s own rate columns are therefore **not read**. Its `NAPS` cell holds `0.015` in a
+`0.00%`-formatted cell — it says 1.50%, which is wrong, and a percent-formatted cell cannot express
+"QAR 1.50 flat" while the label can and does. `Special_Rate` is still read for **one** thing: its
+`Account Code` column declares *which* codes price this way, so adding a second is a row in that sheet
+rather than a code change. With no `Special_Rate` sheet, nothing prices this way — the prior behaviour.
+
+`Special_Rate.WALLET` is also unread, consistent with the earlier Bank_Cost `Wallet` finding: the bank
+charges by card scheme, wallet or not.
+
+### Rounding is per transaction
+
+`873.00` and `550.00` at 1.65% round to `14.40` and `9.08` individually, which is what the bank does.
+The special path sums per-row fees instead of rounding the section total once.
+
+### Parsing is strict, and never guesses
+
+`<scheme> | <number>` with an optional `%`. A label that does not match is reported as unpriced and
+carries **no** bank cost — never guessed, never silently zero. Negative test: breaking `OFF-US Visa`'s
+label to `CREDIT CARD OFF US` produced *"Could not read a rate from: CREDIT CARD OFF US. 2
+transaction(s) carry no bank cost as a result."*
+
+**This column was display-only when it was introduced.** For an Account Code 5 merchant it now moves
+money, and the report says so on every run that contains one.
+
+### The line splits when one section carries two rates
+
+A section shows one Bank Rate, but Account Code 5 credit can be `CREDIT CARD | 1.25%` (on-us
+Visa/MasterCard) and `CREDIT CARD | 1.65%` (off-us and GCCNET) at once. The line splits by rate rather
+than blending two rates into a cell that matches neither — a third axis after wallet and Below, so a
+split line reads `… | WALLET | BELOW 25 | CREDIT CARD 1.65%`.
+
+Only the section that actually carries more than one rate splits; every other section rides the first
+line. Splitting Debit or Himyan by on-us/off-us too would add a line whose Bank Rate is identical,
+which is noise. A merchant whose credit is all one bucket is **not** split and reads as before — which
+is the case for all three merchants today, so the live report gains no rows.
+
+A split line takes its own manual-input key, so the two lines do not share one Rent / Portal Amount
+entry. `isPrimary` is still the first line only, so the Gain and Payout Processing Fee cannot be
+charged twice by the split.
+
+### Verified
+
+Same Masterlist and OMS batch, before and after:
+
+```
+Bank Charges vs Actual Bank Charges, Account Code 5
+  CARRIER SOLUTIONS …                    10.58  vs  10.58   diff 0
+  RAINBOW INTERNATIONAL … | WALLET        1.50  vs   1.50   diff 0
+  STS Transport and Bus Rental | WALLET  14.40  vs  14.40   diff 0
+```
+
+The modelled bank cost now equals what QNB billed, to the cent, on every Account Code 5 transaction.
+Account Code 5's reconciliation `DIFFERENCE TO CONSIDER` went **0.60 → 0**.
+
+- **50 cells differ** in the Weekly report, across 6 rows: the three Account Code 5 lines, their
+  subtotal, their reconciliation block, and the grand total. Nothing else in 228 rows × 90 columns
+  moved.
+- **Daily report: 0 differing cells.** No Account Code 5 merchant is tagged Daily, so the change is
+  provably inert for every other merchant.
+- 8,113/8,113 export formulas evaluate to their cached values.
+- Split test — injecting an ON-US Visa sale on an Account Code 5 terminal:
+  ```
+  STS … | WALLET | CREDIT CARD 1.25%   gross 1000  rate 1.25%  fee 12.50   diff 0
+  STS … | WALLET | CREDIT CARD 1.65%   gross  873  rate 1.65%  fee 14.40   diff 0
+  ```
+  3 lines became 4; the other two merchants stayed unsplit. 8,150/8,150 formulas verify.
+
+### Known behaviour change
+
+For an Account Code 5 merchant, a section with **no transactions** now shows Bank Rate `0` instead of
+its Bank_Cost rate. There is no single correct rate to display: which one applies depends on the cards
+that turn up, so an empty section has none. Gross and Bank Fee are 0 alongside it.
+
+### Open
+
+- Only 4 Account Code 5 transactions exist in the batch, all `OFF-US`. The `1.25%` path is proven by
+  an injected transaction, not by a real one.
+- No Account Code 5 **refund** exists in any batch, so whether the bank charges the flat NAPS fee on a
+  refund is unknown. The flat fee is applied to cleared (Sale) transactions only, matching how Bank
+  Fee is already scoped.
+- `CHINA UNION | 2.50%` parses, so China UnionPay is covered — but no Account Code 5 merchant has
+  taken one yet.

@@ -712,7 +712,7 @@
     </div><!-- /content pane -->
   </div><!-- /shell -->
 
-  <footer>Card type, Card Type 2, merchant, Wallet Classification and Classification lookups, Master List duplicate validation, the Daily/Weekly payout report with live Excel formulas, and the payment-category dashboard are implemented. Special_Rate (Account Code 5) overrides and the Reconciliation section remain to be built — and the source of Actual Bank Charges / Rent / Portal Amount is documented in the report panel notice.</footer>
+  <footer>Card type, Card Type 2, merchant, Wallet Classification and Classification lookups, Master List duplicate validation, the Daily/Weekly payout report with live Excel formulas, Account Code 5 costing from the Card Type column, and the payment-category dashboard are implemented. The Reconciliation section remains to be built — and the source of Actual Bank Charges / Rent / Portal Amount is documented in the report panel notice.</footer>
 </div>
 
 <script>
@@ -1079,6 +1079,61 @@
       });
     }
     return map;
+  }
+
+  // ---- Account Code 5: the bank cost comes from the Card Type column ----
+  //
+  // Most merchants are costed from Bank_Cost by their Cost ID. Account Code 5 is not: QNB prices it
+  // per card type, and the rate is written into the Card Type Classification "Rate | High" column -
+  // the same column the Card Type display reads. Verified against QNB's own Commission field on
+  // every Account Code 5 transaction in a real batch, 4 of 4 exact to the cent:
+  //
+  //   OFF-US Visa  873.00 x 1.65% = 14.40   bank charged 14.40
+  //   OFF-US Visa  550.00 x 1.65% =  9.08   bank charged  9.08
+  //   OFF-US NAPS  500.00  flat 1.50        bank charged  1.50
+  //   OFF-US NAPS 1405.00  flat 1.50        bank charged  1.50
+  //
+  // The merchants' own Cost ID (5 = "Charity", Credit 1.10%) is wrong for them by 3.03 and 4.80 on
+  // those two card transactions, which is how the precedence was settled rather than assumed.
+  //
+  // THE PERCENT SIGN IS LOAD-BEARING. "NAPS | 1.5" is the only label in the sheet written without
+  // one, and NAPS is the only scheme the bank charges as a flat amount per transaction rather than a
+  // percentage of the sale. Read as 1.5% those two NAPS rows would have been costed 28.58 instead of
+  // 3.00. Special_Rate's own NAPS cell says 1.50% and is therefore NOT read: a percent-formatted cell
+  // cannot express "QAR 1.50 flat", while the label can and does.
+  //
+  // Consequence, and it is a real one: this column was display-only when it was introduced. For an
+  // Account Code 5 merchant it now moves money. Parsing is strict - "<scheme> | <number>" with an
+  // optional "%" - and a label that does not match that shape is reported as unpriced rather than
+  // guessed at or silently costed to zero.
+  var CARD_TYPE_RATE_RE = /^\s*(.+?)\s*\|\s*([0-9]+(?:\.[0-9]+)?)\s*(%?)\s*$/;
+  function parseCardTypeRate(label){
+    var m = CARD_TYPE_RATE_RE.exec(String(label === undefined || label === null ? "" : label));
+    if (!m) return null;
+    var v = parseFloat(m[2]);
+    if (!isFinite(v)) return null;
+    return { scheme: m[1].trim(), value: v, isPercent: m[3] === "%" };
+  }
+
+  // A parsed label, as it appears in a split line's name: "CREDIT CARD 1.65%", "NAPS 1.5".
+  function cardTypeRateLabel(parsed){
+    return parsed.scheme + " " + parsed.value + (parsed.isPercent ? "%" : "");
+  }
+
+  // WHICH Account Codes price this way is declared by Special_Rate's own Account Code column, so
+  // adding a second such code is a row in that sheet rather than a code change. Special_Rate's RATE
+  // columns are deliberately not read - see above. With no Special_Rate sheet nothing prices this
+  // way, which is the behaviour that shipped before.
+  function buildSpecialRateCodes(specialRateRows){
+    var set = new Set();
+    if (!specialRateRows || !specialRateRows.length) return set;
+    var key = resolveSingle(Object.keys(specialRateRows[0]), ["accountcode"]);
+    if (!key) return set;
+    specialRateRows.forEach(function(row){
+      var code = String(row[key] === undefined || row[key] === null ? "" : row[key]).trim();
+      if (code !== "") set.add(code);
+    });
+    return set;
   }
 
   // Master List / Configuration connections (Phase 4):
@@ -1570,7 +1625,12 @@
         textMessage: "",
         _amex: true,
         _amexAcquirerId: String(get("acquirerMerchantId") === undefined ? "" : get("acquirerMerchantId")).trim(),
-        _amexRecordType: recordType
+        _amexRecordType: recordType,
+        // The submission report carries 33 columns; the pipeline keeps 16 of them. The AMEX sheet in
+        // the payout workbook reproduces the file as uploaded, so the raw row is kept by reference.
+        // Joining back on Transaction Reference Number would work on both sample files (40/40 unique)
+        // but a repeated reference in a future file would silently attach the wrong resolution.
+        _amexRaw: row
       });
     });
     return out;
@@ -1936,7 +1996,7 @@
     return round2(flat + belowExtra);
   }
 
-  function computePaymentGroupCell(rows, masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled, txnFeeIndex, walletSectionKeys){
+  function computePaymentGroupCell(rows, masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled, txnFeeIndex, walletSectionKeys, specialRateActive){
     var groupRows = rows.filter(function(r){
       if (!walletEnabled) return norm(r.cardType2) === norm(pg.name);
       var split = splitWalletLabel(r.walletClassification);
@@ -1980,8 +2040,36 @@
       ? toRate(pickByCandidates(masterEntry ? masterEntry.raw : null, WALLET_RATE_CANDIDATES))
       : (masterEntry && pg.masterListRateColumn ? toRate(getByNormalizedKey(masterEntry.raw, pg.masterListRateColumn)) : 0);
     var bankRate = bankCostRow && pg.costTableColumn ? toRate(getByNormalizedKey(bankCostRow, pg.costTableColumn)) : 0;
-
     var bankFee = round2(gross * bankRate);
+
+    // Account Code 5: price each transaction from its own Card Type label instead of one section rate.
+    // Rounding is per transaction, not on the section total, because that is what the bank does -
+    // 873.00 and 550.00 at 1.65% round to 14.40 and 9.08 individually.
+    var rateLabelsUnpriced = null;
+    if (specialRateActive){
+      var feeSum = 0, nominal = null, seen = false, uniform = true;
+      saleRows.forEach(function(r){
+        var parsed = parseCardTypeRate(r.cardType);
+        if (!parsed){
+          // Never guessed and never costed to zero in silence: the label is named in the report.
+          var raw = String(r.cardType === undefined || r.cardType === null ? "" : r.cardType).trim() || "(blank Card Type)";
+          (rateLabelsUnpriced = rateLabelsUnpriced || {})[raw] = (rateLabelsUnpriced[raw] || 0) + 1;
+          uniform = false;
+          return;
+        }
+        // No "%" means a flat amount per cleared transaction, not a rate on the sale.
+        feeSum += parsed.isPercent ? round2(toNumber(r.grossAmount) * (parsed.value / 100)) : parsed.value;
+        // A flat label contributes key null, so a section mixing flat and percentage rows is never
+        // reported as having one nominal rate.
+        var key = parsed.isPercent ? parsed.value : null;
+        if (!seen){ seen = true; nominal = key; }
+        else if (nominal !== key) uniform = false;
+      });
+      bankFee = round2(feeSum);
+      // A section priced at one percentage shows that percentage. A flat-fee or mixed section has no
+      // single nominal rate, so the column carries the effective one and Bank Fee is authoritative.
+      bankRate = (uniform && nominal !== null) ? nominal / 100 : (gross ? bankFee / gross : 0);
+    }
     // What the bank actually charged THIS section, from the OMS Commission field. Carried alongside
     // the modelled fee so a Bank Difference can name the section that caused it instead of leaving
     // a single number to be chased by hand.
@@ -1998,19 +2086,72 @@
 
     return {
       name: pg.name, gross: gross, bankRate: bankRate, bankFee: bankFee, actualBankFee: actualBankFee, merchantRate: merchantRate,
+      rateLabelsUnpriced: rateLabelsUnpriced,
       refundType: refund !== 0 ? refundTypeOf(groupRows) : "",
       noqoodyCharge: noqoodyCharge, clearedTxn: clearedTxn, txnCount: txnCount, ratePerTxn: ratePerTxn,
       noqoodyChargePerTxn: noqoodyChargePerTxn, refund: refund, profit: profit, internalTransfer: internalTransfer
     };
   }
 
+  // Which section a row is priced in - the same test computePaymentGroupCell filters on, so the split
+  // below can never disagree with the cell that prices the result.
+  function rowSectionKey(r, walletEnabled){
+    return walletEnabled ? splitWalletLabel(r.walletClassification).base : norm(r.cardType2);
+  }
+
+  // An Account Code 5 section can carry two different bank rates at once: CREDIT CARD | 1.25% for
+  // on-us Visa/MasterCard and CREDIT CARD | 1.65% for off-us and GCCNET. A section shows ONE Bank
+  // Rate, so the line splits by rate rather than blending two rates into one cell and reporting a
+  // number that matches neither.
+  //
+  // Only the section that actually carries more than one rate is split. Every other section rides the
+  // first line: splitting Debit or Himyan by on-us/off-us too would produce a second line whose Bank
+  // Rate is identical, which is noise rather than information. A merchant whose credit business is
+  // all one bucket is not split at all and reads exactly as it did before.
+  function splitLineByRateBucket(spec, paymentGroups, walletEnabled){
+    var target = null;
+    for (var i = 0; i < paymentGroups.length && target === null; i++){
+      var key = norm(paymentGroups[i].name);
+      var labels = {};
+      spec.rows.forEach(function(r){
+        if (rowSectionKey(r, walletEnabled) !== key) return;
+        var parsed = parseCardTypeRate(r.cardType);
+        if (parsed) labels[cardTypeRateLabel(parsed)] = true;
+      });
+      if (Object.keys(labels).length > 1) target = key;
+    }
+    if (target === null) return [spec];
+
+    var buckets = new Map(), others = [];
+    spec.rows.forEach(function(r){
+      if (rowSectionKey(r, walletEnabled) !== target){ others.push(r); return; }
+      var parsed = parseCardTypeRate(r.cardType);
+      // An unparseable label cannot be bucketed by rate; it stays with the first line, where the
+      // pricing cell reports it as unpriced.
+      if (!parsed){ others.push(r); return; }
+      var label = cardTypeRateLabel(parsed);
+      if (!buckets.has(label)) buckets.set(label, []);
+      buckets.get(label).push(r);
+    });
+    // Sorted so the cheaper bucket leads and the order is stable between runs.
+    return Array.from(buckets.keys()).sort().map(function(label, i){
+      return {
+        rows: (i === 0 ? others : []).concat(buckets.get(label)),
+        isWallet: spec.isWallet, isBelow: spec.isBelow, rateLabel: label
+      };
+    });
+  }
+
   function buildMerchantLine(g, rows, opts, bankCostIndex, paymentGroups, manualInputs, txnFeeIndex){
     var isBelow = !!opts.isBelow, isWallet = !!opts.isWallet, isPrimary = !!opts.isPrimary;
     var threshold = opts.threshold, walletEnabled = !!opts.walletEnabled;
-    var id = norm(g.mid) + "|" + norm(g.merchantKey) + (isWallet ? "|wallet" : "|card") + (isBelow ? "|below" : "|main");
+    // A rate-split line needs its own manual-input key, or the two lines would share one Rent/Portal
+    // Amount entry. Only Account Code 5 lines carry a rateLabel, so every other key is unchanged.
+    var id = norm(g.mid) + "|" + norm(g.merchantKey) + (isWallet ? "|wallet" : "|card") + (isBelow ? "|below" : "|main") +
+             (opts.rateLabel ? "|" + norm(opts.rateLabel) : "");
     var groups = paymentGroups.map(function(pg){
       return computePaymentGroupCell(rows, g.masterEntry, pg, isBelow, bankCostIndex, isWallet, walletEnabled, txnFeeIndex,
-                                     opts.walletSectionKeys);
+                                     opts.walletSectionKeys, !!opts.specialRateActive);
     });
     var totalProfit = round2(sumBy(groups, function(c){ return c.profit; }));
     var totalBankFee = round2(sumBy(groups, function(c){ return c.bankFee; }));
@@ -2070,12 +2211,15 @@
       merchantName: g.merchantName,
       accountCode: g.accountCode,
       label: g.merchantName + (g.isAmexOnly ? " | AMEX" : "") +
-             (isWallet ? " | WALLET" : "") + (isBelow ? " | BELOW " + threshold : ""),
+             (isWallet ? " | WALLET" : "") + (isBelow ? " | BELOW " + threshold : "") +
+             (opts.rateLabel ? " | " + opts.rateLabel : ""),
       isAmexOnly: !!g.isAmexOnly,
       amexOwnAccountCode: g.amexOwnAccountCode || "",
       isBelow: isBelow,
       isWallet: isWallet,
       isPrimary: isPrimary,
+      rateLabel: opts.rateLabel || "",
+      specialRateActive: !!opts.specialRateActive,
       txnCount: rows.length,
       refundCount: isPrimary ? refundCount : 0,
       baseGainForBankCharge: isPrimary ? round2(baseGain) : 0,
@@ -2099,8 +2243,9 @@
     };
   }
 
-  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency, walletConfigured, txnFeeIndex, reconInputs, walletSectionKeys, businessIndex){
+  function computePayoutReport(processed, bankCostIndex, paymentGroups, manualInputs, frequency, walletConfigured, txnFeeIndex, reconInputs, walletSectionKeys, businessIndex, specialRateCodes){
     reconInputs = reconInputs || {};
+    specialRateCodes = specialRateCodes || new Set();
     var merchantGroups = new Map();
     processed.forEach(function(row){
       if (!row.merchantMatched) return;
@@ -2285,10 +2430,24 @@
       // A merchant that resolved but has no usable rows at all still gets one line, so it is visible.
       if (!lines.length) lines.push({ rows: [], isWallet: false, isBelow: false });
 
+      // Account Code 5 prices per card type, so a section can hold two bank rates and the line splits
+      // once more. Innermost, after wallet and Below, so a split line reads
+      // "... | WALLET | BELOW 25 | CREDIT CARD 1.65%". A conflicting or unassigned Account Code is not
+      // in the set and prices from Bank_Cost as before, rather than being guessed into a rate.
+      var specialRateActive = specialRateCodes.has(String(g.accountCode).trim());
+      if (specialRateActive){
+        var split = [];
+        lines.forEach(function(spec){
+          splitLineByRateBucket(spec, paymentGroups, walletConfigured).forEach(function(l){ split.push(l); });
+        });
+        lines = split;
+      }
+
       var built = lines.map(function(spec, i){
         return buildMerchantLine(g, spec.rows, {
           isBelow: spec.isBelow, isWallet: spec.isWallet, isPrimary: i === 0,
-          threshold: threshold, walletEnabled: walletConfigured, walletSectionKeys: walletSectionKeys
+          threshold: threshold, walletEnabled: walletConfigured, walletSectionKeys: walletSectionKeys,
+          rateLabel: spec.rateLabel || "", specialRateActive: specialRateActive
         }, bankCostIndex, paymentGroups, manualInputs, txnFeeIndex);
       });
 
@@ -2437,6 +2596,22 @@
     var grandTotal = subtotalOf(merchantLines);
     var unresolvedCount = sumBy(processed, function(r){ return r.merchantMatched ? 0 : 1; });
 
+    // Account Code 5 rows whose Card Type label does not parse are costed at nothing. That is a
+    // configuration error in the Card Type Classification sheet, so it is collected and named rather
+    // than left as a quietly missing bank fee.
+    var specialRateUnpriced = {};
+    var specialRateLines = 0;
+    merchantLines.forEach(function(l){
+      if (!l.specialRateActive) return;
+      specialRateLines++;
+      l.groups.forEach(function(c){
+        if (!c.rateLabelsUnpriced) return;
+        Object.keys(c.rateLabelsUnpriced).forEach(function(k){
+          specialRateUnpriced[k] = (specialRateUnpriced[k] || 0) + c.rateLabelsUnpriced[k];
+        });
+      });
+    });
+
     return {
       paymentGroups: paymentGroups,
       accountCodeGroups: accountCodeGroups,
@@ -2445,6 +2620,9 @@
       unresolvedCount: unresolvedCount,
       excludedByFrequencyCount: excludedByFrequencyCount,
       txnFeeUsage: txnFeeUsage,
+      specialRateCodes: Array.from(specialRateCodes),
+      specialRateLines: specialRateLines,
+      specialRateUnpriced: specialRateUnpriced,
       businessPlacements: businessPlacements,
       businessConflicts: (businessIndex && businessIndex.conflicts) || [],
       walletConfigured: !!walletConfigured,
@@ -3570,6 +3748,10 @@
   // text with thousand separators, which Excel treats as labels and sums to 0.
   // Identifier columns (Merchant ID, Terminal ID, Reference Number) deliberately stay text — a
   // numeric-typed MID would reach Excel as a bare number and render in scientific notation.
+  // Sheet names for the payout workbook. Referenced rather than repeated: the frozen-header patch
+  // finds these sheets by name after the workbook is written.
+  var PRD_OMS_SHEET_NAME = "Process Raw Details (OMS)";
+  var AMEX_EXPORT_SHEET_NAME = "AMEX";
   var PRD_HEADER_LABELS = COLUMNS.map(function(c){ return c.label; }).concat(["Match Status"]);
   var PRD_NUMERIC_LABELS = COLUMNS.filter(function(c){ return c.num; }).map(function(c){ return c.label; });
 
@@ -3604,6 +3786,69 @@
         if (cell && cell.t === "n") cell.z = "#,##0.00";
       }
     });
+    return sheet;
+  }
+
+  // ---- AMEX sheet for the payout workbook ----
+  //
+  // The AMEX submission report as uploaded, all of its columns, in their original order, plus the
+  // five columns that say where each row ended up. Without those the sheet cannot be traced: the
+  // AMEX file carries no merchant name and no usable MID, so "why is this row under Account Code
+  // 15" is otherwise a manual cross-reference against Terminal_Mapping.
+  //
+  // Rows the pipeline dropped (a blank Terminal Id, which is how the file's trailing line reads) are
+  // still listed, marked as skipped, rather than disappearing from a sheet that claims to be the raw
+  // file.
+  var AMEX_RESOLVED_LABELS = ["Merchant", "MID (resolved)", "Account Code (applied)", "Placement", "Match Status"];
+  // Identifier columns are written as text. A 12-digit Acquirer Merchant Id or a 23-digit ARN reaches
+  // Excel as a bare number and renders in scientific notation - the same defect that forced Merchant
+  // ID to text in Process Raw Details.
+  var AMEX_TEXT_COLUMNS = ["outletnumber", "batchnumber", "terminalid", "cardnumber", "approvalcode",
+                           "merchantnumber", "settlementreferencenumber", "arn", "acquirermerchantid",
+                           "weborderreferencenumber", "stan", "rrn", "transactionreferencenumber",
+                           "disputecasereferencenumber", "currency"];
+
+  function amexPlacement(p){
+    if (!p) return "";
+    if (p._amexMergedFrom) return "Merged onto existing " + AMEX_REDIRECT_TO + " line";
+    if (p._amexStandalone) return "Standalone " + AMEX_REDIRECT_TO + " line";
+    return "Own account code";
+  }
+
+  function buildAmexSheet(rawRows, processed){
+    if (!rawRows || !rawRows.length) return null;
+    // Identity join: every processed AMEX row kept a reference to the raw row it was built from.
+    var byRaw = new Map();
+    (processed || []).forEach(function(r){ if (r._amex && r._amexRaw) byRaw.set(r._amexRaw, r); });
+
+    // Column order follows the file, not a hard-coded list, so an AMEX report that gains a column
+    // carries it through instead of dropping it.
+    var rawLabels = [];
+    rawRows.forEach(function(row){
+      Object.keys(row).forEach(function(k){ if (rawLabels.indexOf(k) === -1) rawLabels.push(k); });
+    });
+    var textSet = {};
+    rawLabels.forEach(function(k){ if (AMEX_TEXT_COLUMNS.indexOf(norm(k)) !== -1) textSet[k] = true; });
+
+    var headers = rawLabels.concat(AMEX_RESOLVED_LABELS);
+    var out = rawRows.map(function(row){
+      var rec = {};
+      rawLabels.forEach(function(k){
+        var v = row[k];
+        rec[k] = textSet[k] && v !== undefined && v !== null && v !== "" ? String(v) : v;
+      });
+      var p = byRaw.get(row);
+      rec["Merchant"] = p ? p.merchant : "";
+      rec["MID (resolved)"] = p && p.merchantId !== undefined && p.merchantId !== null ? String(p.merchantId) : "";
+      rec["Account Code (applied)"] = p && p._accountCode !== undefined && p._accountCode !== null ? String(p._accountCode) : "";
+      rec["Placement"] = amexPlacement(p);
+      rec["Match Status"] = !p ? "Skipped \u2014 blank Terminal Id"
+        : (p.merchantMatched ? "Matched" : (p.unmatchedReason || "Unmatched"));
+      return rec;
+    });
+
+    var sheet = XLSX.utils.json_to_sheet(out, { header: headers });
+    if (sheet["!ref"]) sheet["!autofilter"] = { ref: sheet["!ref"] };
     return sheet;
   }
 
@@ -3698,7 +3943,8 @@
     state.payoutReport = computePayoutReport(state.result.processed, bankCostIndex, paymentGroups, state.manualInputs,
                                              state.frequency, !!(state.result && state.result.walletConfigured), txnFeeIndex,
                                              state.reconInputs, buildWalletSectionKeys(state.walletRulesRows),
-                                             buildBusinessIndex(state.masterListRows, state.terminalMappingRows));
+                                             buildBusinessIndex(state.masterListRows, state.terminalMappingRows),
+                                             buildSpecialRateCodes(state.specialRateRows));
     renderPayoutReport(state.payoutReport);
     renderDataStrip();
     applyMerchantFilter();
@@ -3834,8 +4080,10 @@
     notice.style.margin = "16px 20px";
     notice.innerHTML =
       "This report groups by Card Type 2 (payment group), only includes merchants tagged " + escapeHtml(state.frequency || "") + " in Master_List, and applies the Master_List / Terminal_Mapping / Bank_Cost / Card_Types connections and the Below Amount Rule split. " +
-      "<strong>Actual Bank Charges</strong> is computed from the OMS Commission field. Not yet implemented, so treated as 0 / unused: " +
-      "<strong>Special_Rate</strong> overrides for Account Code 5. <strong>Wallet Classification</strong> and <strong>Classification</strong> are now resolved from the Prefix + Wallet_Rules sheets. " +
+      "<strong>Actual Bank Charges</strong> is computed from the OMS Commission field. " +
+      "Account Codes listed in <strong>Special_Rate</strong> are costed from the <strong>Card Type</strong> column rather than from Bank_Cost; " +
+      "Special_Rate's own rate columns are not read, because a percent-formatted cell cannot express the flat per-transaction NAPS fee that the label does. " +
+      "<strong>Wallet Classification</strong> and <strong>Classification</strong> are now resolved from the Prefix + Wallet_Rules sheets. " +
       "<strong>Rent</strong> and <strong>Portal Amount</strong> come from your payout portal, not from any uploaded sheet — enter them per merchant below; everything downstream recalculates live. " +
       "<strong>Double-click any merchant row</strong> to see the transactions behind it, and download them as their own worksheet." +
       (report.unresolvedCount > 0 ? ("<br>" + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row and are excluded from this report.") : "") +
@@ -3996,6 +4244,29 @@
         feeNotice.innerHTML = bits.join("<br>");
         body.appendChild(feeNotice);
       }
+    }
+
+    // Account Code 5 prices from the Card Type column, so that column is now load-bearing for those
+    // merchants. Say so where it is visible, and name any label that could not be read.
+    if (report.specialRateLines){
+      var srUnpriced = Object.keys(report.specialRateUnpriced || {});
+      var srNotice = document.createElement("div");
+      srNotice.className = srUnpriced.length ? "banner bad" : "banner sample";
+      srNotice.style.margin = "0 20px 16px";
+      var srBits = [];
+      srBits.push("<strong>Account Code " + escapeHtml(report.specialRateCodes.join(", ")) +
+        "</strong> is costed from the <strong>Card Type</strong> column, not from Bank_Cost — " +
+        report.specialRateLines + " line" + (report.specialRateLines === 1 ? "" : "s") + " in this report. " +
+        "A label ending in <code>%</code> is a rate on the sale; one without (<code>NAPS | 1.5</code>) is a " +
+        "flat amount per cleared transaction. Editing that column changes what these merchants are charged.");
+      if (srUnpriced.length){
+        srBits.push("<strong>Could not read a rate from: " + escapeHtml(srUnpriced.join(", ")) + ".</strong> " +
+          srUnpriced.reduce(function(a, k){ return a + report.specialRateUnpriced[k]; }, 0) +
+          " transaction(s) carry no bank cost as a result. Nothing is guessed — fix the " +
+          "<strong>Rate | High</strong> cell to read <code>SCHEME | 1.65%</code> or <code>SCHEME | 1.5</code>.");
+      }
+      srNotice.innerHTML = srBits.join("<br>");
+      body.appendChild(srNotice);
     }
 
     // The dashboard is rendered from this same computed report, into the Dashboard section — one
@@ -4666,11 +4937,19 @@
       reportSheet["!rows"] = reportSheet["!rows"] || [];
     });
 
-    var prdSheet = buildProcessRawDetailsSheet(state.result.processed);
+    // The two rails are kept on their own sheets. Process Raw Details used to hold OMS + AMEX
+    // together, so its row count was the combined control total; it is now the OMS total alone, with
+    // the AMEX submission report reproduced beside it.
+    var omsOnly = state.result.processed.filter(function(r){ return !r._amex; });
+    var prdSheet = buildProcessRawDetailsSheet(omsOnly);
+    var amexRaw = state.omsFile && state.omsFile.amexRows ? state.omsFile.amexRows : null;
+    var amexSheet = buildAmexSheet(amexRaw, state.result.processed);
 
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, reportSheet, sheetName);
-    XLSX.utils.book_append_sheet(wb, prdSheet, "Process Raw Details");
+    XLSX.utils.book_append_sheet(wb, prdSheet, PRD_OMS_SHEET_NAME);
+    // No AMEX tab uploaded means no AMEX sheet, rather than an empty one claiming there was nothing.
+    if (amexSheet) XLSX.utils.book_append_sheet(wb, amexSheet, AMEX_EXPORT_SHEET_NAME);
     var arrayBuf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
     var reportSheetXmlPath = "xl/worksheets/sheet" + (wb.SheetNames.indexOf(sheetName) + 1) + ".xml";
 
@@ -4682,8 +4961,13 @@
     // export's own frozen-pane configuration.
     // Process Raw Details keeps a frozen header and an AutoFilter: 3,700 rows are unreadable once
     // the header scrolls away, and the filter is how a merchant's transactions are isolated by hand.
-    var prdIdx = wb.SheetNames.indexOf("Process Raw Details");
-    var freezeRowPaths = prdIdx === -1 ? [] : [{ path: "xl/worksheets/sheet" + (prdIdx + 1) + ".xml", rows: 1 }];
+    // Both flat sheets keep a frozen header row. Looked up by the same constant the sheets were
+    // appended with - a literal here silently stopped freezing when the sheet was renamed.
+    var freezeRowPaths = [PRD_OMS_SHEET_NAME, AMEX_EXPORT_SHEET_NAME].map(function(n){
+      return wb.SheetNames.indexOf(n);
+    }).filter(function(i){ return i !== -1; }).map(function(i){
+      return { path: "xl/worksheets/sheet" + (i + 1) + ".xml", rows: 1 };
+    });
 
     patchWorksheetForExcel(arrayBuf, reportSheetXmlPath, 3, freezeRowPaths).then(function(blob){
       if (!downloadsApi) {
