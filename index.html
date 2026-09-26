@@ -1500,6 +1500,12 @@
         if (!namesRelated(p.name, q.name)) continue;
         var gp = grouped.get(p.mid + "|" + p.key), gq = grouped.get(q.mid + "|" + q.key);
         if (gp && gp === gq) continue;                       // already one business
+        // Two DIFFERENT non-blank Business IDs are a decision, not an omission: the operator has
+        // looked at this pair and recorded that they are separate businesses. SHABAL ALFGAN trades
+        // under three MIDs on three separate agreements and each must keep its own charge, so the
+        // report must stop asking about it - a warning that cannot be dismissed gets ignored, and
+        // the real one gets missed with it.
+        if (p.businessId && q.businessId && p.businessId !== q.businessId) continue;
         if (!(p.gain || p.fee) || !(q.gain || q.fee)) continue;
         index.unlinked.push({
           a: { name: p.displayName, mid: p.displayMid, gain: p.gain, fee: p.fee },
@@ -4380,8 +4386,9 @@
       var ulh = "<strong>" + report.businessUnlinked.length + " similarly-named merchant pair" +
         (report.businessUnlinked.length === 1 ? "" : "s") + " charged separately.</strong> " +
         "Each side carries its own Gain / Payout Fee. If a pair is really one business, give both rows the " +
-        "same <strong>Business ID</strong> in Master_List and it will be charged once; if they are separate " +
-        "businesses, this is already correct and nothing needs doing." +
+        "same <strong>Business ID</strong> and it will be charged once. If they are separate businesses on " +
+        "separate agreements, this is already correct — give them <em>different</em> Business IDs to record " +
+        "that and they will stop being listed here." +
         "<ul class=\"bank-diff-list\">";
       report.businessUnlinked.forEach(function(u){
         ulh += "<li>" + escapeHtml(u.a.name) + " <code>" + escapeHtml(String(u.a.mid)) + "</code> (" +

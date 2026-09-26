@@ -2717,3 +2717,35 @@ as "none", like a blank. The loudest warning in the report was the one with noth
 - **The export is untouched: 0 differing cells** across 228 rows × 90 columns against the previous
   build. This was a presentation change only.
 - No page errors.
+
+---
+
+## Different Business IDs record "separate on purpose" — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** Confirmed by the user for SHABAL ALFGAN.
+
+`SHABAL ALFGAN MANDI AND TRADITIONAL FOOD RESTAURANT` trades under three MIDs on **three separate
+agreements**, so each must keep its own Gain and Payout Processing Fee. That is what the app already
+did — but the unlinked-look-alike warning kept naming it on every run, with no way to say "checked,
+they are separate".
+
+A warning that cannot be dismissed gets ignored, and the genuine one gets missed with it. So:
+
+- **Same Business ID** on two rows → one business, flat charge once.
+- **Different non-blank Business IDs** → a recorded decision that they are separate. Still charged
+  separately, and **no longer listed** as a possible missing link.
+- **Both blank** → undecided; still listed, because the app cannot tell.
+
+One column now carries both answers, and silence means "not looked at yet" rather than "fine".
+
+### Verified
+
+With `SHABAL-336 / SHABAL-337 / SHABAL-338` set on the three rows:
+
+- The unlinked warning drops from **4 pairs to 2** — SHABAL's two entries gone, `PRESTIGE AUTO CLINIC`
+  and `DRYMS FWNS KWMBNY` still listed because they are still undecided.
+- `IBN DAWOOD` still merges on the shared `IBNDAWOOD` value.
+- **Charges unchanged**: all three SHABAL rows still carry `gain 1.00 / fee 4.00`, 15.00 across the
+  three.
+- **Daily report: 0 differing cells** against the run before the edit. Recording the decision changes
+  nothing but the warning.
