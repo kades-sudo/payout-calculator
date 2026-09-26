@@ -747,6 +747,21 @@
   // Up to 7 configuration sheets, resolved by fuzzy name match (case/space/punctuation-insensitive).
   // master_list is merged across every uploaded workbook (Daily + Weekly lists may ship separately);
   // the rest use the first match found, in upload order.
+  // The OMS upload may be a workbook with two tabs: the OMS transactions and the AMEX submission
+  // report pasted in beside them. Sheets are found by name, not position, so the tab order does not
+  // matter - and a single-sheet OMS file still works exactly as before via the first-sheet fallback.
+  var OMS_SHEET_NAMES = ["oms", "omsraw", "omstransactions", "rawoms", "omsrawfile"];
+  var AMEX_SHEET_NAMES = ["amex", "amexraw", "amexrawfile", "amexsubmission", "amexsubmissionreport",
+                          "submissionreport"];
+  function findSheetContaining(workbook, needle, exactCandidates){
+    var exact = findSheet(workbook, exactCandidates);
+    if (exact) return exact;
+    for (var i = 0; i < workbook.SheetNames.length; i++){
+      if (norm(workbook.SheetNames[i]).indexOf(needle) !== -1) return workbook.Sheets[workbook.SheetNames[i]];
+    }
+    return null;
+  }
+
   var SHEET_ALIASES = {
     master_list: ["masterlist"],
     terminal_mapping: ["terminalmapping", "tidmapping", "terminalmap"],
@@ -1424,7 +1439,81 @@
     });
   }
 
-  function runPipeline(masterListRows, cardTypeMatrix, omsRowsRaw, terminalMappingRows, prefixRows, walletRulesRows){
+  // ---- AMEX submission report ----
+  //
+  // AMEX settles on its own rail and arrives as a separate submission report, twice a week, in a
+  // shape nothing like the OMS export. It carries no usable Merchant ID for matching: "Acquirer
+  // Merchant Id" is the MID with a fixed prefix stripped ("10000" or "777"), and Excel mangles the
+  // 12-digit ones into scientific notation the moment the file is saved as CSV. "Terminal Id" is
+  // clean, short, and matched every row of both sample files against Terminal_Mapping, so it is the
+  // key; the Acquirer id is kept as a cross-check and reported when the two disagree, which is how a
+  // terminal reassigned between merchants would be caught.
+  //
+  // Posting Date comes from Settlement Date, not Transaction Date: the file is a settlement batch
+  // covering several days, and it belongs to the run it is uploaded with.
+  var AMEX_FIELD_CANDIDATES = {
+    terminalId: ["terminalid"],
+    acquirerMerchantId: ["acquirermerchantid"],
+    grossAmount: ["transactionamount"],
+    creditAmount: ["creditamount"],
+    debitAmount: ["debitamount"],
+    commission: ["discountamount"],
+    discountRate: ["discountrate"],
+    netAmount: ["nettransactionamount"],
+    cardNumber: ["cardnumber"],
+    transactionDate: ["transactiondate"],
+    transactionTime: ["transactiontime"],
+    postingDate: ["settlementdate"],
+    approvedCode: ["approvalcode"],
+    referenceNumber: ["transactionreferencenumber", "rrn"],
+    recordType: ["recordtype"],
+    outletLocation: ["outletlocation"]
+  };
+  // AMEX has no wallet variant and no Card Type Classification row, so every row is a card row in
+  // the AMEX section. The label must match the Card_Types entry ("AMEX") for the section to find it.
+  var AMEX_SECTION = "AMEX";
+  // AMEX settles into Account Code 15 for merchants whose own terminals sit on these codes. 16 and
+  // the rest keep their own code. Only the AMEX moves - the merchant's card business stays put.
+  var AMEX_REDIRECT_FROM = ["9", "4", "5"];
+  var AMEX_REDIRECT_TO = "15";
+
+  function normalizeAmexRows(rawRows){
+    if (!rawRows || !rawRows.length) return [];
+    var resolver = buildResolver(Object.keys(rawRows[0]), AMEX_FIELD_CANDIDATES);
+    var out = [];
+    rawRows.forEach(function(row){
+      var get = function(f){ return resolver[f] ? row[resolver[f]] : ""; };
+      var tid = get("terminalId");
+      if (String(tid === undefined || tid === null ? "" : tid).trim() === "") return; // trailing blank line
+      var recordType = String(get("recordType") === undefined ? "" : get("recordType")).trim();
+      out.push({
+        referenceNumber: get("referenceNumber"),
+        merchantId: "",                       // filled in from Terminal_Mapping - AMEX carries none
+        location: get("outletLocation"),
+        terminalId: tid,
+        // Only CREDIT has ever appeared in a sample. A row of any other Record Type is carried
+        // through with its type intact so it is reported rather than silently priced as a Sale.
+        transactionType: norm(recordType) === "credit" ? "Sale" : (recordType || "(blank)"),
+        transactionDate: get("transactionDate"),
+        transactionTime: get("transactionTime"),
+        postingDate: get("postingDate"),      // Settlement Date
+        grossAmount: get("grossAmount"),
+        commission: get("commission"),        // AMEX's own discount - the actual bank charge
+        netAmount: get("netAmount"),
+        cardNumber: get("cardNumber"),
+        cardTypeOnOff: AMEX_SECTION,
+        approvedCode: get("approvedCode"),
+        invoiceNo: "",
+        textMessage: "",
+        _amex: true,
+        _amexAcquirerId: String(get("acquirerMerchantId") === undefined ? "" : get("acquirerMerchantId")).trim(),
+        _amexRecordType: recordType
+      });
+    });
+    return out;
+  }
+
+  function runPipeline(masterListRows, cardTypeMatrix, omsRowsRaw, terminalMappingRows, prefixRows, walletRulesRows, amexRowsRaw){
     var cardTypeMap = buildCardTypeMap(cardTypeMatrix);
     var terminalMapIndex = buildTerminalMapIndex(terminalMappingRows);
     var masterListIndex = buildMasterListIndex(masterListRows);
@@ -1436,10 +1525,35 @@
     var classificationConfigured = walletConfigured && walletRulesRows && walletRulesRows.length &&
       !!buildResolver(Object.keys(walletRulesRows[0]), WALLET_RULE_FIELD_CANDIDATES).classOnMatch;
     var omsRows = normalizeOmsRows(omsRowsRaw);
+    var amexRows = normalizeAmexRows(amexRowsRaw);
+
+    // AMEX resolves on Terminal ID alone, so it needs a second index. A Terminal ID used by more
+    // than one MID is left out rather than guessed at - it is reported instead.
+    var amexTerminalIndex = new Map();
+    var amexAmbiguousTerminals = {};
+    (terminalMappingRows || []).forEach(function(row){
+      var resolver = amexTerminalIndex._resolver ||
+        (amexTerminalIndex._resolver = buildResolver(Object.keys(terminalMappingRows[0]), TERMINAL_FIELD_CANDIDATES));
+      var tid = norm(resolver.terminalId ? row[resolver.terminalId] : "");
+      if (!tid) return;
+      var entry = {
+        mid: resolver.mid ? row[resolver.mid] : "",
+        merchantKey: resolver.merchantKey ? row[resolver.merchantKey] : "",
+        accountCode: resolver.accountCode ? row[resolver.accountCode] : ""
+      };
+      var prev = amexTerminalIndex.get(tid);
+      if (prev){
+        if (norm(prev.mid) !== norm(entry.mid)) amexAmbiguousTerminals[String(tid)] = true;
+        return;
+      }
+      amexTerminalIndex.set(tid, entry);
+    });
 
     var unmatchedMerchants = [];
     var unmatchedCardTypeCount = 0;
     var walletStats = { matched: 0, unmatched: 0, noRule: {}, noCardDigits: 0 };
+    var amexStats = { rows: amexRows.length, matched: 0, unmatchedTerminal: [], acquirerMismatch: [],
+                      nonCredit: {}, redirected: 0, ambiguous: Object.keys(amexAmbiguousTerminals) };
 
     var processed = omsRows.map(function(row){
       var res = resolveMerchant(row, terminalMapIndex, masterListIndex);
@@ -1505,10 +1619,60 @@
       };
     });
 
+    // AMEX rows, resolved on Terminal ID and appended to the same processed set, so they flow
+    // through sections, subtotals, the reconciliation block and the export untouched - and so the
+    // control total stays checkable as OMS rows + AMEX rows.
+    var amexProcessed = amexRows.map(function(row){
+      var tm = amexTerminalIndex.get(norm(row.terminalId));
+      if (!tm){
+        amexStats.unmatchedTerminal.push(String(row.terminalId));
+        return Object.assign({}, row, {
+          merchant: "", cardType: AMEX_SECTION, cardType2: AMEX_SECTION,
+          walletClassification: AMEX_SECTION, classification: AMEX_SECTION,
+          merchantMatched: false, unmatchedReason: "AMEX Terminal ID not in Terminal_Mapping",
+          _accountCode: "", _merchantKey: "", _masterListEntry: null, _terminalMatched: false
+        });
+      }
+      // Cross-check: the Acquirer Merchant Id is the MID with a fixed prefix stripped, so it must be
+      // a suffix of the MID the terminal resolves to. A clean value that is not is reported - that
+      // is a terminal that has moved between merchants. A mangled value is skipped, not failed.
+      var acq = row._amexAcquirerId.replace(/^0+/, "");
+      if (acq && !/e\+/i.test(row._amexAcquirerId) && String(tm.mid).indexOf(acq) === -1){
+        amexStats.acquirerMismatch.push(String(row.terminalId) + " (" + row._amexAcquirerId + " vs MID " + tm.mid + ")");
+      }
+      if (norm(row._amexRecordType) !== "credit"){
+        var rt = row._amexRecordType || "(blank)";
+        amexStats.nonCredit[rt] = (amexStats.nonCredit[rt] || 0) + 1;
+      }
+      var ml = masterListIndex.get(norm(tm.mid) + "|" + norm(tm.merchantKey));
+      var ownCode = String(tm.accountCode === undefined || tm.accountCode === null ? "" : tm.accountCode).trim();
+      // Only the AMEX moves. The merchant's card business stays in its own Account Code; this row
+      // becomes a line of its own under 15, carrying the merchant's own name, rates and Cost ID.
+      var redirected = AMEX_REDIRECT_FROM.indexOf(ownCode) !== -1;
+      if (redirected) amexStats.redirected++;
+      amexStats.matched++;
+      return Object.assign({}, row, {
+        merchantId: tm.mid,
+        merchant: ml ? ml.merchantName : "",
+        cardType: AMEX_SECTION, cardType2: AMEX_SECTION,
+        walletClassification: AMEX_SECTION, classification: AMEX_SECTION,
+        merchantMatched: !!ml,
+        unmatchedReason: ml ? "" : "AMEX merchant not in Master_List",
+        _accountCode: redirected ? AMEX_REDIRECT_TO : ownCode,
+        _amexOwnAccountCode: ownCode,
+        _amexRedirected: redirected,
+        _merchantKey: tm.merchantKey,
+        _masterListEntry: ml || null,
+        _terminalMatched: true
+      });
+    });
+    processed = processed.concat(amexProcessed);
+
     return {
       processed: processed,
       unmatchedMerchants: unmatchedMerchants,
       unmatchedCardTypeCount: unmatchedCardTypeCount,
+      amexStats: amexStats,
       walletConfigured: walletConfigured,
       classificationConfigured: classificationConfigured,
       walletStats: walletStats,
@@ -1795,7 +1959,10 @@
       merchantKey: g.merchantKey,
       merchantName: g.merchantName,
       accountCode: g.accountCode,
-      label: g.merchantName + (isWallet ? " | WALLET" : "") + (isBelow ? " | BELOW " + threshold : ""),
+      label: g.merchantName + (g.isAmexOnly ? " | AMEX" : "") +
+             (isWallet ? " | WALLET" : "") + (isBelow ? " | BELOW " + threshold : ""),
+      isAmexOnly: !!g.isAmexOnly,
+      amexOwnAccountCode: g.amexOwnAccountCode || "",
       isBelow: isBelow,
       isWallet: isWallet,
       isPrimary: isPrimary,
@@ -1827,7 +1994,10 @@
     var merchantGroups = new Map();
     processed.forEach(function(row){
       if (!row.merchantMatched) return;
-      var key = norm(row.merchantId) + "|" + norm(row._merchantKey);
+      // A redirected AMEX row cannot share the merchant's group: that group belongs to the
+      // merchant's own Account Code, and this row has to appear under 15. It gets a group of its
+      // own, carrying the same merchant name, rates and Cost ID - only the placement differs.
+      var key = norm(row.merchantId) + "|" + norm(row._merchantKey) + (row._amexRedirected ? "|amex15" : "");
       if (!merchantGroups.has(key)){
         merchantGroups.set(key, {
           // Force to string: a numeric-typed Merchant ID (common in real OMS exports) would otherwise
@@ -1835,6 +2005,10 @@
           mid: row.merchantId === undefined || row.merchantId === null ? "" : String(row.merchantId),
           merchantKey: row._merchantKey,
           merchantName: row.merchant,
+          // Marks the AMEX-only line so it reads as AMEX rather than as a second merchant, and so
+          // the flat charges can be kept on the merchant's main line rather than charged twice.
+          isAmexOnly: !!row._amexRedirected,
+          amexOwnAccountCode: row._amexOwnAccountCode || "",
           accountCode: "(unassigned)",
           accountCodesSeen: {},
           masterEntry: row._masterListEntry,
@@ -1848,7 +2022,10 @@
       var code = row._accountCode === undefined || row._accountCode === null ? "" : String(row._accountCode).trim();
       if (code !== ""){
         group.accountCodesSeen[code] = (group.accountCodesSeen[code] || 0) + 1;
-        if (group.accountCode === "(unassigned)") group.accountCode = row._accountCode;
+        // Stored as the trimmed STRING, not the raw cell. Terminal_Mapping yields a number (15) while
+        // the AMEX redirect yields a string ("15"), and a Map keyed on the raw value then produced two
+        // separate "Account Code 15" sections.
+        if (group.accountCode === "(unassigned)") group.accountCode = code;
       }
       group.rows.push(row);
     });
@@ -1889,6 +2066,19 @@
     //
     // The per-transaction Refund Fee is NOT moved: a refund happens on a specific MID and stays
     // costed there.
+    // A redirected AMEX line and its merchant's own line are the SAME merchant, so the flat Gain and
+    // Payout Fee must be charged once across the pair, not once each. They are linked here under a
+    // business key of their own, which then goes through the same lowest-active-Account-Code rule:
+    // the merchant's own line (Account Code 4, 5 or 9) is lower than 15 and carries them, and when
+    // the merchant has AMEX only, the AMEX line is the sole line and carries them itself.
+    var amexPairKeyOf = function(g){ return "amexpair|" + norm(g.mid) + "|" + norm(g.merchantKey); };
+    var amexPairs = new Map();
+    merchantGroups.forEach(function(g){
+      var k = amexPairKeyOf(g);
+      if (!amexPairs.has(k)) amexPairs.set(k, []);
+      amexPairs.get(k).push(g);
+    });
+
     var businessPlacements = [];
     if (businessIndex && businessIndex.businessOf && businessIndex.businessOf.size){
       var activeByBusiness = new Map();
@@ -1926,6 +2116,22 @@
         });
       });
     }
+
+    amexPairs.forEach(function(list){
+      if (list.length < 2) return;   // AMEX only, or no AMEX - the single line carries as usual
+      list.sort(function(a, b){
+        var ca = toNumber(a.accountCode), cb = toNumber(b.accountCode);
+        if (!ca) ca = Infinity;
+        if (!cb) cb = Infinity;
+        return ca - cb;
+      });
+      list.forEach(function(g, i){
+        if (i === 0) return;                       // lowest Account Code keeps the charges
+        // Never overwrite a suppression the SOFTPOS+PAX rule already set.
+        if (g.businessCharge && g.businessCharge.suppress) return;
+        g.businessCharge = { suppress: true, gain: 0, fee: 0 };
+      });
+    });
 
     // Merchants are ordered A–Z by name, and a merchant's main and below-threshold rows are built
     // consecutively, so they stay together under that merchant wherever the report is grouped.
@@ -2920,7 +3126,9 @@
 
   function renderOmsFileList(){
     els.omsFileList.innerHTML = state.omsFile ?
-      '<div class="file-chip"><span>' + escapeHtml(state.omsFile.name) + ' (' + state.omsFile.rows.length + ' rows)</span><button type="button" id="removeOms" aria-label="Remove file">×</button></div>' : "";
+      '<div class="file-chip"><span>' + escapeHtml(state.omsFile.name) + ' (' + state.omsFile.rows.length + ' rows' +
+        (state.omsFile.amexRows && state.omsFile.amexRows.length ? ' + ' + state.omsFile.amexRows.length + ' AMEX' : '') +
+        ')</span><button type="button" id="removeOms" aria-label="Remove file">×</button></div>' : "";
     var rm = document.getElementById("removeOms");
     if (rm) rm.addEventListener("click", function(){ state.omsFile = null; state.isSample = false; renderOmsFileList(); updateStepStates(); });
   }
@@ -2930,9 +3138,13 @@
     if (!file) return;
     state.isSample = false;
     readWorkbook(file).then(function(wb){
-      var sheet = wb.Sheets[wb.SheetNames[0]];
-      var rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      state.omsFile = { name: file.name, rows: rows };
+      var omsSheet = findSheetContaining(wb, "oms", OMS_SHEET_NAMES) || wb.Sheets[wb.SheetNames[0]];
+      var amexSheet = findSheetContaining(wb, "amex", AMEX_SHEET_NAMES);
+      // Guard against a single sheet named "AMEX" being read as both.
+      if (amexSheet === omsSheet) amexSheet = null;
+      var rows = XLSX.utils.sheet_to_json(omsSheet, { defval: "" });
+      var amexRows = amexSheet ? XLSX.utils.sheet_to_json(amexSheet, { defval: "" }) : null;
+      state.omsFile = { name: file.name, rows: rows, amexRows: amexRows };
       renderOmsFileList();
       updateStepStates();
     }).catch(function(err){
@@ -3003,7 +3215,7 @@
       }
       if (i >= order.length){
         var result = runPipeline(state.masterListRows, state.cardTypeMatrix, state.omsFile.rows, state.terminalMappingRows,
-                                 state.prefixRows, state.walletRulesRows);
+                                 state.prefixRows, state.walletRulesRows, state.omsFile.amexRows);
         state.result = result;
         renderDataStrip();
         state.payoutReport = null;

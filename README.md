@@ -2105,3 +2105,111 @@ cached value equals its formula — but the count quoted was wrong. Diffs now co
 
 3,264/3,264 export formulas evaluate to their cached values, control total 3,707 / 1,245,071.15,
 Process Raw Details unchanged.
+
+---
+
+## AMEX submission report — second tab, matched on Terminal ID — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** Rules chosen by the user.
+
+### Upload
+
+The OMS upload may now be a workbook with **two tabs**. Sheets are found by name, not position:
+
+```
+tab matching "oms"   -> OMS transactions   (falls back to the FIRST sheet, so single-sheet files are unchanged)
+tab matching "amex"  -> AMEX submission report
+```
+
+### Matching — Terminal ID, cross-checked by Acquirer Merchant Id
+
+AMEX carries no usable Merchant ID. `Acquirer Merchant Id` is the MID with a fixed prefix stripped
+(`10000` or `777`), and Excel turns the 12-digit ones into scientific notation the moment the file is
+saved as CSV — 9 of 40 rows were destroyed that way in the first sample. `Terminal Id` is clean and
+matched **40/40** on both samples, so it is the key.
+
+The Acquirer id is kept as a **cross-check**: it must be a suffix of the MID the terminal resolves to.
+A clean value that is not is reported — that is a terminal moved between merchants, which neither key
+catches alone. A mangled value is skipped, not failed.
+
+A Terminal ID used by more than one MID is reported, never guessed at.
+
+### Column mapping
+
+| App field | AMEX column |
+|---|---|
+| Terminal ID | `Terminal Id` |
+| Gross Amount | `Transaction Amount` |
+| Commission | `Discount Amount` (AMEX's own discount — the actual bank charge) |
+| Net Amount | `Net Transaction Amount` |
+| **Posting Date** | **`Settlement Date`** — the file is a settlement batch covering several days |
+| Transaction Date / Time | `Transaction Date` / `Transaction Time` |
+| Approved Code | `Approval Code` |
+| Reference Number | `Transaction Reference Number` |
+| Transaction Type | `Record Type`: `CREDIT` → Sale; anything else carried through and **reported** |
+| Card Type / Card Type 2 | constant `AMEX` |
+
+Only `CREDIT` has appeared in any sample. A row of any other Record Type is **not** priced as a Sale —
+it keeps its own type so it surfaces as unknown rather than being silently charged.
+
+### Account Code
+
+AMEX settles into **Account Code 15** for merchants whose own terminals sit on **9, 4 or 5**. Every
+other code keeps its own — 16 stays 16. **Only the AMEX moves**; the merchant's card business stays
+in its own section, so per-Account-Code reconciliation against the portal is unaffected.
+
+A redirected row forms **its own line** under 15, labelled `<merchant> | AMEX`, carrying the
+merchant's own name, MID, `AMEX Merchant Rate` and Cost ID. Nothing is inferred from merchant names:
+of the 29 merchants on 9/4/5, only 6 have a name-matching row on 15 and 23 have none, so
+attach-to-a-sibling could never have been the general rule.
+
+**The flat charges are not doubled.** A redirected AMEX line and its merchant's own line are linked
+as one pair and go through the same lowest-active-Account-Code rule as a SOFTPOS+PAX business: the
+merchant's own line (4, 5 or 9) is lower than 15 and keeps the Gain and Payout Fee; when a merchant
+has AMEX only, its AMEX line is the sole line and carries them itself.
+
+### One bug found and fixed while testing
+
+`group.accountCode` stored the **raw** cell, so Terminal_Mapping's numeric `15` and the redirect's
+string `"15"` keyed `byAccountCode` separately and produced **two "Account Code 15" sections**. It
+now stores the trimmed string. Verified: an OMS-only file is byte-identical to the previous build.
+
+### Verified
+
+```
+OMS-only file, new build vs previous:
+  DAILY PAYOUT        differing cells: 0
+  Process Raw Details differing cells: 0
+
+Two-tab file:
+  Process Raw Details 3,747 rows   = 3,707 OMS + 40 AMEX
+  control total       1,293,593.65 = 1,245,071.15 + 48,522.50
+  Card Type           AMEX 40 rows
+  3,303/3,303 formulas evaluate to their cached values
+```
+
+AMEX placement in the Daily run:
+
+| Acct | Line | AMEX gross | bank rate | merch rate |
+|---|---|---|---|---|
+| 15 | AL SULTAN MEDICAL CENTER | 150.00 | 0.0275 | 0.03 |
+| 15 | KUDI CAFE | 360.00 | 0.0275 | 0.03 |
+| 15 | **NEW BALANCE DOHA \| AMEX** | 799.00 | 0.0275 | 0.03 |
+| 15 | NEW BALANCE DOHA QNB | 3,563.50 | 0.0275 | 0.03 |
+| 15 | THREADS M E TRADING WLL | 944.00 | 0.0275 | 0.03 |
+| 15 | ZEGNA DOHA TRADING LLC | 15,300.00 | 0.0275 | 0.03 |
+| 16 | BVLGARI Vendom | 17,300.00 | 0.0275 | 0.03 |
+
+38,416.50 of the 48,522.50 appears; the missing 10,106.00 is ELC EYEWEAR (8,957.00), ARTEC WATER
+(850.00) and GOLDEN VELVET (299.00) — all **Weekly**, correctly excluded from a Daily run.
+
+NEW BALANCE carries `gain 9 / fee 4` once, on its Account Code 4 line; its AMEX line shows 0/0.
+
+### Outstanding
+
+- **No refund sample.** Both AMEX files are 100% `CREDIT` with `Debit Amount` empty. The non-CREDIT
+  path reports rather than prices, and needs a real example before it can be wired.
+- **No duplicate guard.** Uploading the same AMEX tab twice processes it twice;
+  `Transaction Reference Number` is unique per row and could back one if wanted.
+- The `Wallet_Rules` `CHINAY` typo is **fixed** in this Masterlist; MID `100005269900372`
+  (ALMANZAR TRADING, SOFTPOS on Account Code 9) now has a Master_List row.
