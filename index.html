@@ -1263,6 +1263,7 @@
   // a wrong one both move money silently otherwise.
   var POS_FIELD_CANDIDATES = {
     mid: ["mid", "merchantid"],
+    merchantKey: ["merchantkey"],
     platform: ["platform"],
     model: ["model"]
   };
@@ -1270,6 +1271,9 @@
   // any longer name starting the same way.
   var BUSINESS_NAME_MIN = 6;
 
+  // Keyed by MID + Merchant Key, never by MID alone. One aggregator MID carries dozens of separate
+  // merchants - 777101639900128 holds 31 of them under keys 33-64 - and keying on the MID made every
+  // one of them inherit every other's terminals.
   function buildPosKindIndex(terminalRows){
     var map = new Map();
     if (!terminalRows || !terminalRows.length) return map;
@@ -1277,8 +1281,9 @@
     terminalRows.forEach(function(row){
       var mid = norm(resolver.mid ? row[resolver.mid] : "");
       if (!mid) return;
-      if (!map.has(mid)) map.set(mid, { softpos: false, pax: false });
-      var e = map.get(mid);
+      var key = mid + "|" + norm(resolver.merchantKey ? row[resolver.merchantKey] : "");
+      if (!map.has(key)) map.set(key, { softpos: false, pax: false });
+      var e = map.get(key);
       // SOFTPOS is matched on a prefix: the sheet has carried both "SOFTPOS" and "SOFTPOST".
       if (/^softpos/.test(norm(resolver.model ? row[resolver.model] : ""))) e.softpos = true;
       if (norm(resolver.platform ? row[resolver.platform] : "") === "pax") e.pax = true;
@@ -1307,9 +1312,11 @@
       var mid = norm(resolver.mid ? row[resolver.mid] : "");
       var name = norm(resolver.merchantName ? row[resolver.merchantName] : "");
       if (!mid || !name) return;
-      var kind = pos.get(mid) || { softpos: false, pax: false };
+      var key = norm(resolver.merchantKey ? row[resolver.merchantKey] : "");
+      var kind = pos.get(mid + "|" + key) || { softpos: false, pax: false };
       entries.push({
         mid: mid,
+        key: key,
         displayMid: String(row[resolver.mid]),
         name: name,
         displayName: String(row[resolver.merchantName] === undefined ? "" : row[resolver.merchantName]).trim(),
@@ -1325,7 +1332,7 @@
     for (var i = 0; i < entries.length; i++){
       for (var j = i + 1; j < entries.length; j++){
         var a = entries[i], b = entries[j];
-        if (a.mid === b.mid) continue;
+        if (a.mid === b.mid && a.key === b.key) continue;   // the same Master_List row
         if (!namesRelated(a.name, b.name)) continue;
         if (!((a.softpos && b.pax) || (b.softpos && a.pax))) continue;
         union(i, j);
@@ -1342,7 +1349,7 @@
     var index = { businessOf: new Map(), charge: new Map(), groups: [], conflicts: [] };
     buckets.forEach(function(members, root){
       var mids = {};
-      members.forEach(function(m){ mids[m.mid] = true; });
+      members.forEach(function(m){ mids[m.mid + "|" + m.key] = true; });
       if (Object.keys(mids).length < 2) return;   // a single MID is its own business, as before
       var gains = {}, fees = {};
       members.forEach(function(m){
@@ -1352,8 +1359,8 @@
       var gainVals = Object.keys(gains), feeVals = Object.keys(fees);
       var group = {
         key: "biz" + root,
-        members: members.map(function(m){ return { mid: m.mid, displayMid: m.displayMid, name: m.displayName,
-                                                   softpos: m.softpos, pax: m.pax }; }),
+        members: members.map(function(m){ return { mid: m.mid, key: m.key, displayMid: m.displayMid,
+                                                   name: m.displayName, softpos: m.softpos, pax: m.pax }; }),
         gain: gainVals.length ? toNumber(gainVals[0]) : 0,
         fee: feeVals.length ? toNumber(feeVals[0]) : 0,
         conflict: gainVals.length > 1 || feeVals.length > 1
@@ -1365,7 +1372,7 @@
         index.conflicts.push(group);
         return;
       }
-      members.forEach(function(m){ index.businessOf.set(m.mid, group.key); });
+      members.forEach(function(m){ index.businessOf.set(m.mid + "|" + m.key, group.key); });
       index.charge.set(group.key, group);
       index.groups.push(group);
     });
@@ -2186,7 +2193,7 @@
     if (businessIndex && businessIndex.businessOf && businessIndex.businessOf.size){
       var activeByBusiness = new Map();
       merchantGroups.forEach(function(g){
-        var key = businessIndex.businessOf.get(norm(g.mid));
+        var key = businessIndex.businessOf.get(norm(g.mid) + "|" + norm(g.merchantKey));
         if (!key) return;
         if (!activeByBusiness.has(key)) activeByBusiness.set(key, []);
         activeByBusiness.get(key).push(g);

@@ -2268,3 +2268,60 @@ Refunds landing correctly:
 | NEW BALANCE DOHA QNB | 2,780.25 | 1,582.25 | 5 |
 
 1,582.25 = 908.00 + 674.25, the two flipped rows on that merchant; gross falls by exactly that.
+
+---
+
+## Fix: same-business pairing keyed on MID alone charged unrelated merchants
+
+**Status: BUG FIX.** Reported by the user: BURQAN showed `Gain 4 / Fee 4` with `0 / 0` in Master_List.
+
+### Cause
+
+`buildBusinessIndex` recorded membership as `businessOf.set(mid, businessKey)` — **keyed by MID
+alone** — and `computePayoutReport` looked it up the same way. But an aggregator MID carries many
+separate merchants, one per Merchant Key:
+
+```
+MID 777101639900128  ->  31 merchants under Merchant Keys 33-64, all SOFTPOS on Account Code 9
+       key 33  BURQAN TRADING …            gain 0  fee 0
+       key 41  CHANAB PLUS RESTAURANT      gain 4  fee 4
+       key 60  RUN DESIGN …                gain 4  fee 4
+       key 62  TIMELY FRESH FISH TRADING   gain 4  fee 4
+       …
+```
+
+Seven of those merchants legitimately pair with a same-named PAX merchant on Account Code 15, and
+each wrote `businessOf.set("777101639900128", …)` — **overwriting the last**. BURQAN, on the same MID
+under key 33 and in no pair at all, then looked itself up by that MID, matched the surviving entry,
+and was handed that business's `Gain 4 / Fee 4`.
+
+The pairing itself was never wrong — the same 10 pairs form before and after. The **lookup** was.
+
+### Fix
+
+`businessOf` and `buildPosKindIndex` are both keyed by **MID + Merchant Key**, and the lookup in
+`computePayoutReport` matches. `buildPosKindIndex` had the same flaw: keyed per MID, every merchant on
+a shared MID inherited every other merchant's terminals, so all 31 looked SOFTPOS.
+
+### Verified
+
+Same Masterlist and OMS file, before and after:
+
+```
+BEFORE   acct 9  BURQAN TRADING …   gain=4  fee=4      report totals: gain 154  fee 88
+AFTER    acct 9  BURQAN TRADING …   gain=0  fee=0      report totals: gain 150  fee 84
+```
+
+22 cells differ, all of them BURQAN's row, its Account Code 9 subtotal, its reconciliation block and
+the grand total. `Process Raw Details`: 0 differing cells. The 10 genuine pairs are unchanged —
+COCOMAS still carries its charge once, and no other merchant moved.
+
+3,264/3,264 export formulas evaluate to their cached values.
+
+### Where this came from
+
+Introduced in the SOFTPOS + PAX change. The aggregator MID `777100432320320` was known at the time —
+it was called out for carrying several merchants under different Merchant Keys — but the business
+index was still written keyed on MID. It went unnoticed because the Masterlist of that day had only a
+handful of merchants on a shared MID and none of them paired; this Masterlist has 31 on one MID with
+seven pairs among them.
