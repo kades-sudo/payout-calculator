@@ -476,6 +476,31 @@
   .banner{
     margin:0 20px 16px; padding:10px 14px; border-radius:10px; font-size:12.5px; line-height:1.5;
   }
+
+  /* ---- Compact checks strip ----
+     Eleven stacked banners pushed the download button below the fold and buried the two or three
+     that actually needed acting on. They are collapsed into one line that states the counts, with
+     everything still one click away — nothing is deleted, because several of these are the only
+     warning that money is being withheld, mis-priced or double-charged. */
+  .checks{ margin:0 20px 16px; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+  .checks > summary{
+    display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer;
+    font-size:12.5px; list-style:none;
+  }
+  .checks > summary::-webkit-details-marker{ display:none; }
+  .checks > summary::after{ content:"Details ▸"; margin-left:auto; color:var(--ink-muted); font-size:11px; }
+  .checks[open] > summary::after{ content:"Hide ▾"; }
+  .checks-dot{ flex:none; width:8px; height:8px; border-radius:50%; background:var(--ok); }
+  .checks.has-warn .checks-dot{ background:var(--warn); }
+  .checks.has-bad .checks-dot{ background:var(--danger); }
+  .checks-label{ color:var(--ink); }
+  .checks-label strong{ font-weight:600; }
+  .checks-body{ border-top:1px solid var(--border); padding:12px 0 2px; }
+  .checks-body .banner{ margin:0 14px 10px; }
+
+  /* The report / raw-details table, kept in the app but out of the way. */
+  .grid-toggle{ margin:0 20px 16px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .grid-note{ font-size:11.5px; color:var(--ink-muted); }
   .banner.sample{ background:var(--accent-soft); color:var(--accent); }
   .banner.warn{ background:var(--warn-soft); color:var(--warn); }
   .banner.bad{ background:var(--danger-soft); color:var(--danger); }
@@ -2464,7 +2489,11 @@
       var feeId = me && me.txnFeeId !== undefined && me.txnFeeId !== null ? String(me.txnFeeId).trim() : "";
       var hasTier = feeId !== "" && txnFeeIndex && !!txnFeeIndex.get(norm(feeId));
       var hasBelowExtra = !!(me && toNumber(me.ratePerTrnx) > 0 && toNumber(me.belowAmountRule) > 0);
-      if (feeId !== "" && !hasTier) txnFeeUsage.missingTier[feeId] = (txnFeeUsage.missingTier[feeId] || 0) + 1;
+      // A Txn Fee ID of 0 means "no flat fee", not a broken reference: 71 merchants carry it and
+      // their money is already right (no tier, so nothing is added). Reporting it as a missing
+      // Txn_Fee row made the loudest warning in the report the one with nothing behind it.
+      var feeIdIsNone = feeId === "" || toNumber(feeId) === 0;
+      if (!feeIdIsNone && !hasTier) txnFeeUsage.missingTier[feeId] = (txnFeeUsage.missingTier[feeId] || 0) + 1;
       // The two charges stack, so a merchant can count in both buckets.
       if (hasTier) txnFeeUsage.tier++;
       if (hasBelowExtra) txnFeeUsage.legacy++;
@@ -3649,6 +3678,7 @@
   ];
 
   function renderResults(result){
+    var notices = makeNotices();
     var processed = result.processed;
     var total = processed.length;
     var unmatchedCount = result.unmatchedMerchants.length;
@@ -3714,7 +3744,7 @@
           (Object.keys(missingMids).length > 8 ? " … and " + (Object.keys(missingMids).length - 8) + " more" : ""));
       }
       banner.innerHTML = parts.join("<br>");
-      resultsCard.appendChild(banner);
+      notices.add(banner, "warn");
     }
 
     // Wallet Classification outcome — what the prefix lookup actually did, and anything it could not
@@ -3746,14 +3776,19 @@
           ? "<br><strong>Classification</strong> comes from the Classification columns on the same rule row; a blank cell carries the Wallet Classification value through unchanged."
           : "<br><strong>Classification</strong> is not configured — add <strong>Classification (Match)</strong> and <strong>Classification (No Match)</strong> columns to Wallet_Rules to fill that column.");
     }
-    resultsCard.appendChild(walletBanner);
+    notices.add(walletBanner, (!result.walletConfigured || noRuleCount > 0) ? "warn" : "info");
     if (state.isSample){
       var sBanner = document.createElement("div");
       sBanner.className = "banner sample";
       sBanner.innerHTML = "This is example data for demonstration — upload your own Master List and OMS file to process real transactions.";
-      resultsCard.appendChild(sBanner);
+      notices.add(sBanner, "info");
     }
 
+    notices.render(resultsCard, "Processing checks");
+
+    // Same treatment as the payout report: the 3,700-row table is still built by this code, just not
+    // mounted until asked for. The Download button above always covers every row.
+    function renderRawGrid(host){
     var scroll = document.createElement("div");
     scroll.className = "table-scroll";
     var table = document.createElement("table");
@@ -3814,7 +3849,9 @@
     });
     table.appendChild(tbody);
     scroll.appendChild(table);
-    resultsCard.appendChild(scroll);
+    host.appendChild(scroll);
+    }   // end renderRawGrid
+    mountParkedGrid(resultsCard, "transaction table", renderRawGrid);
     wrap.appendChild(resultsCard);
 
     els.resultsPanel.appendChild(wrap);
@@ -4167,9 +4204,78 @@
     makeRow("value", "");
   }
 
+  // Collects the section's notices and renders them as one collapsible strip instead of a stack of
+  // banners. Counts are stated on the summary line so a problem is still visible when collapsed; the
+  // strip opens itself when anything is an error, because those are the ones that move money.
+  function makeNotices(){
+    var items = [];
+    return {
+      add: function(el, level){ if (el) items.push({ el: el, level: level || "info" }); return el; },
+      render: function(host, label){
+        if (!items.length) return null;
+        var bad = items.filter(function(i){ return i.level === "bad"; }).length;
+        var warn = items.filter(function(i){ return i.level === "warn"; }).length;
+        var box = document.createElement("details");
+        box.className = "checks" + (bad ? " has-bad" : warn ? " has-warn" : "");
+        if (bad) box.open = true;
+        var bits = [];
+        if (bad) bits.push("<strong>" + bad + "</strong> need" + (bad === 1 ? "s" : "") + " attention");
+        if (warn) bits.push("<strong>" + warn + "</strong> to review");
+        var info = items.length - bad - warn;
+        if (info) bits.push(info + " informational");
+        var sum = document.createElement("summary");
+        sum.innerHTML = '<span class="checks-dot"></span><span class="checks-label">' +
+          escapeHtml(label) + " — " + (bits.length ? bits.join(" · ") : "nothing to report") + "</span>";
+        box.appendChild(sum);
+        var bodyEl = document.createElement("div");
+        bodyEl.className = "checks-body";
+        // Errors first: a config problem should not sit below three informational listings.
+        items.sort(function(a, b){
+          var rank = { bad: 0, warn: 1, info: 2 };
+          return rank[a.level] - rank[b.level];
+        });
+        items.forEach(function(i){ bodyEl.appendChild(i.el); });
+        box.appendChild(bodyEl);
+        host.appendChild(box);
+        return box;
+      }
+    };
+  }
+
+  // The grid is built exactly as before and kept in the app - it is simply not shown by default.
+  // renderMerchantGrid stays callable so the Dashboard can mount the same table later.
+  function mountParkedGrid(host, label, buildFn){
+    var wrap = document.createElement("div");
+    wrap.className = "grid-toggle";
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-secondary";
+    btn.textContent = "Show " + label;
+    var note = document.createElement("span");
+    note.className = "grid-note";
+    note.textContent = "Hidden by default. The download above contains every row either way.";
+    wrap.appendChild(btn);
+    wrap.appendChild(note);
+    host.appendChild(wrap);
+    var slot = document.createElement("div");
+    slot.hidden = true;
+    host.appendChild(slot);
+    var built = false;
+    btn.addEventListener("click", function(){
+      slot.hidden = !slot.hidden;
+      // Built only after unhiding: the table measures its own header heights to place the sticky
+      // rows, and every height reads 0 inside a hidden element.
+      if (!slot.hidden && !built){ buildFn(slot); built = true; }
+      btn.textContent = (slot.hidden ? "Show " : "Hide ") + label;
+      note.hidden = !slot.hidden;
+    });
+    return slot;
+  }
+
   function renderPayoutReport(report){
     var body = els.payoutReportBody;
     body.innerHTML = "";
+    var notices = makeNotices();
 
 
     var notice = document.createElement("div");
@@ -4185,12 +4291,13 @@
       "<strong>Double-click any merchant row</strong> to see the transactions behind it, and download them as their own worksheet." +
       (report.unresolvedCount > 0 ? ("<br>" + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row and are excluded from this report.") : "") +
       (report.excludedByFrequencyCount > 0 ? ("<br>" + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency and are excluded from this report.") : "");
-    body.appendChild(notice);
+    notices.add(notice, "info");
 
     // AMEX: what was read, where it landed, and everything that could not be decided. The pairing
     // and the redirect are inferred, so they are shown rather than left to be discovered in a
     // reconciliation weeks later.
     var ax = state.result && state.result.amexStats;
+    var axHasProblem = false;
     if (ax && ax.rows){
       var axBox = document.createElement("div");
       axBox.className = "banner";
@@ -4220,11 +4327,15 @@
              ") — left as its own AMEX line.</div>";
       });
       var nc = Object.keys(ax.nonCredit || {});
+      axHasProblem = !!((ax.unmatchedTerminal && ax.unmatchedTerminal.length) ||
+        (ax.acquirerMismatch && ax.acquirerMismatch.length) ||
+        (ax.ambiguous && ax.ambiguous.length) ||
+        (ax.ambiguousDestinations && ax.ambiguousDestinations.length) || nc.length);
       if (nc.length)
         h += '<div class="bad">Unrecognised Record Type, not priced as a Sale: ' +
              escapeHtml(nc.map(function(k){ return k + " x" + ax.nonCredit[k]; }).join(", ")) + "</div>";
       axBox.innerHTML = h;
-      body.appendChild(axBox);
+      notices.add(axBox, axHasProblem ? "bad" : "info");
     }
 
     // Same-business pairs, and where the flat charges landed. This listing is not decoration: the
@@ -4256,7 +4367,7 @@
           "). Both rows are charged separately until one figure is agreed.</div>";
       });
       bizBox.innerHTML = bizHtml;
-      body.appendChild(bizBox);
+      notices.add(bizBox, (report.businessConflicts && report.businessConflicts.length) ? "bad" : "info");
     }
 
     // Look-alikes that were NOT linked and both carry a flat charge. Either they are separate
@@ -4280,7 +4391,7 @@
       });
       ulh += "</ul>";
       ulBox.innerHTML = ulh;
-      body.appendChild(ulBox);
+      notices.add(ulBox, "warn");
     }
 
     // Every merchant whose Bank Difference passes the threshold, with the sections behind it. The
@@ -4322,7 +4433,7 @@
         html += "</ul>";
       }
       bd.innerHTML = html;
-      body.appendChild(bd);
+      notices.add(bd, "warn");
     }
 
     // A Bank_Cost workbook still carrying the retired general Wallet column would mislead anyone
@@ -4337,7 +4448,7 @@
         "(Credit Card Wallet &rarr; Credit Card, Debit Card Wallet &rarr; Debit Card, and so on). " +
         "Delete the column to avoid editing a cell that no longer affects anything. " +
         "Your <strong>Wallet MerchantRate</strong> in Master_List is unaffected — that is your own pricing, not the bank's cost.";
-      body.appendChild(stale);
+      notices.add(stale, "warn");
     }
 
     // Per-transaction pricing: which route each merchant took, and anything misconfigured. The
@@ -4364,7 +4475,7 @@
             "the old column can be removed once this reaches zero.");
         }
         feeNotice.innerHTML = bits.join("<br>");
-        body.appendChild(feeNotice);
+        notices.add(feeNotice, missingIds.length ? "bad" : "info");
       }
     }
 
@@ -4399,7 +4510,7 @@
       });
       nh += "</ul>";
       negBox.innerHTML = nh;
-      body.appendChild(negBox);
+      notices.add(negBox, "warn");
     }
 
     // Account Code 5 prices from the Card Type column, so that column is now load-bearing for those
@@ -4422,7 +4533,7 @@
           "<strong>Rate | High</strong> cell to read <code>SCHEME | 1.65%</code> or <code>SCHEME | 1.5</code>.");
       }
       srNotice.innerHTML = srBits.join("<br>");
-      body.appendChild(srNotice);
+      notices.add(srNotice, srUnpriced.length ? "bad" : "info");
     }
 
     // The dashboard is rendered from this same computed report, into the Dashboard section — one
@@ -4440,10 +4551,13 @@
         "Check the Process Raw Details match-status column above." +
         (report.unresolvedCount > 0 ? (" " + report.unresolvedCount + " transaction(s) did not resolve to a Master_List row.") : "") +
         (report.excludedByFrequencyCount > 0 ? (" " + report.excludedByFrequencyCount + " transaction(s) belong to merchants tagged with a different Payout Frequency.") : "");
+      notices.render(body, "Report checks");
       body.appendChild(none);
       return;
     }
 
+    // Totals first, then the checks strip, then the parked grid — the figures and the Download
+    // button are what this panel is for.
     var summary = document.createElement("div");
     summary.className = "summary-grid";
     summary.style.margin = "0 20px 16px";
@@ -4453,6 +4567,7 @@
       statTile(fmtAmount(report.grandTotal.merchantPayout), "Total Merchant Payout", "ok") +
       statTile(fmtAmount(report.grandTotal.totalTransfer), "Total Transfer", "");
     body.appendChild(summary);
+    notices.render(body, "Report checks");
 
     var totalCols = 3 + report.paymentGroups.length * GROUP_SUBCOLS.length + RECON_COLS.length + FINAL_COLS.length;
     var STICKY_LEFT = [0, 50, 180]; // No., MID, Merchant — matches CSS sticky-col widths
@@ -4467,12 +4582,14 @@
       return '<td class="sticky-col sticky-col-1" style="left:0" colspan="3">' + html + "</td>";
     }
 
+    // Built on demand into whatever host it is given, so the Dashboard can mount the same table.
+    function renderMerchantGrid(host){
     var filterNote = document.createElement("div");
     filterNote.className = "banner sample";
     filterNote.id = "filterNote";
     filterNote.style.margin = "0 20px 12px";
     filterNote.hidden = true;
-    body.appendChild(filterNote);
+    host.appendChild(filterNote);
 
     var scroll = document.createElement("div");
     scroll.className = "table-scroll";
@@ -4553,17 +4670,17 @@
 
     table.appendChild(tbody);
     scroll.appendChild(table);
-    body.appendChild(scroll);
+    host.appendChild(scroll);
 
     // Wrapped headers have no fixed height, so the sticky offsets are measured from the rendered
     // rows rather than assumed: the column-header row sits below the group row, and the Account Code
-    // section label sits below both.
+    // section label sits below both. The host is unhidden before this runs, or every height reads 0.
     var grpH = groupRow.getBoundingClientRect().height;
     var headH = headRow.getBoundingClientRect().height;
     table.style.setProperty("--grp-h", grpH + "px");
     table.style.setProperty("--head-h", (grpH + headH) + "px");
 
-    Array.prototype.forEach.call(body.querySelectorAll(".report-input"), function(input){
+    Array.prototype.forEach.call(host.querySelectorAll(".report-input"), function(input){
       input.addEventListener("change", function(){
         var field = input.dataset.field;
         var val = toNumber(input.value);
@@ -4581,6 +4698,11 @@
         recomputeAndRenderPayoutReport();
       });
     });
+    }   // end renderMerchantGrid
+
+    // Parked: the table is still built by the code above, just not shown until asked for. Rent,
+    // Portal Amount and the two audit-portal figures are typed into it, so it has to stay reachable.
+    mountParkedGrid(body, "merchant table", renderMerchantGrid);
   }
 
   // Excel built-in Cell Style colors (theme-independent) and this workbook's actual Accent1/Accent3

@@ -2660,3 +2660,60 @@ are better replaced by a Business ID.
   Business ID.
 - `MAX MUSCLE GYM` was pointed at `Txn Fee ID 7`, whose note reads "STS/CARRIER" (Debit 2, Himyan 2).
   Worth confirming that is deliberate.
+
+---
+
+## Both grids parked; notices collapsed into one strip — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** Layout requested by the user.
+
+The Daily/Weekly Payout Report and Process Raw Details each showed a full table plus a stack of
+banners. Both tables are now hidden by default behind a **Show table** button, and the banners are
+collapsed into a single **checks strip**. The Download buttons are unchanged and stay at the top.
+
+### The grids are parked, not deleted
+
+The table-building code is untouched and lives in `renderMerchantGrid(host)` and `renderRawGrid(host)`,
+each taking the element to build into, so the Dashboard can mount the same table later without a
+rewrite. `mountParkedGrid` renders the toggle and builds on first open.
+
+**Unhiding happens before building.** The report table measures its own header heights to position
+the sticky rows, and every height reads 0 inside a hidden element — building first would have placed
+the frozen headers wrong. Verified: `--grp-h` measures `32.25px`, not `0px`.
+
+### Why the grid could not simply be removed
+
+It carries every manual input in the app — **203 Rent, 115 Portal Amount, 8 audit-portal figures** on
+the current Weekly batch. Deleting it would have left no way to enter Rent or Portal Amount at all.
+The toggle keeps them one click away.
+
+### Messages consolidated, not discarded
+
+Eleven banners became one line stating the counts, everything still one click away. They are not
+deleted: several are the only warning that money is being withheld, mis-priced or double-charged.
+The strip opens itself when anything is an error, and errors sort above warnings above informational.
+
+```
+Report checks — 2 to review · 5 informational          [Details]
+Processing checks — 1 to review · 1 informational      [Details]
+```
+
+### One warning turned out to be a false alarm
+
+`Txn Fee ID 0` was reported as "no matching Txn_Fee row" for **71 merchants**, and being an error it
+forced the strip open on every run. A `0` there means *no flat fee*, not a broken reference — those
+merchants are already priced correctly, because a missing tier contributes nothing. It is now treated
+as "none", like a blank. The loudest warning in the report was the one with nothing behind it.
+
+### Verified
+
+- Payout report default view: **0 tables**, **0 loose banners**, 7 notices inside the strip, 4 summary
+  tiles, Download button visible.
+- Process Raw Details default view: **0 tables**, **0 banners as direct children**, 2 inside the strip,
+  Download button present.
+- Clicking **Show merchant table**: table appears with 203 Rent, 115 Portal Amount and 8 audit-portal
+  inputs intact, sticky offsets measured correctly.
+- Download still produces the full workbook (5,020,813 bytes) with every row.
+- **The export is untouched: 0 differing cells** across 228 rows × 90 columns against the previous
+  build. This was a presentation change only.
+- No page errors.
