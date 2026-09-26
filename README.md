@@ -2573,3 +2573,90 @@ The payout total *rises* by 5.29 — the three negatives were dragging it down.
 - The rule has no threshold: a merchant at −0.10 is withheld exactly as one at −5.00. That is
   deliberate (a transfer cannot be negative at any size) but it is a policy, not a fact.
 - Whether the uncollected Gain and Payout Processing Fee carry into the next run is not modelled.
+
+---
+
+## Business ID: an explicit same-business link — PENDING VERIFICATION
+
+**Status: PENDING VERIFICATION.** Column requested by the user.
+
+Master_List gains an optional **`Business ID`** column. Rows carrying the same value are one business,
+so the flat Gain For Bank Charge and Payout Processing Fee are charged **once** across them — no name
+check, no platform check, nothing inferred. Blank means "infer it", which is every row but a handful.
+
+### Why an explicit column was unavoidable
+
+The SOFTPOS + PAX inference cannot resolve every case, and the failure is not fixable by a better
+heuristic:
+
+```
+same business →  IBN DAWOOD REFIXOLEGY CENTRE  ||  IBN DAWOOD REFIXOLEGY CENTRE NEW
+different     →  WASEEF                        ||  WASEEF CARE
+different     →  GUCCI VENDOME                 ||  GUCCI VENDOME KIDS
+```
+
+All three are two PAX (or two QNB) MIDs on the same Account Code with one name a prefix of the other.
+There is no signal in the data that separates them. The one who knows says so in a cell.
+
+### Different rates are NOT a reason to merge lines
+
+IBN DAWOOD's two MIDs differ on exactly two fields — `Debit Merchant Rate` 1.75% vs **0.90%** and
+`Himyan Merchant Rate` 1.75% vs **0.90%**. Each MID keeps its own line and its own rates, as it
+already did:
+
+```
+IBN DAWOOD REFIXOLEGY CENTRE       DEBIT CARD  gross 940.00  merchRate 1.75%
+IBN DAWOOD REFIXOLEGY CENTRE NEW   DEBIT CARD  gross 800.00  merchRate 0.90%
+```
+
+Merging the lines would mean averaging two contracted rates. The business link moves **only** the flat
+charge — `businessCharge` overrides `baseGain` and `baseFee` and nothing else — so "different rates"
+and "charge the flat fee once" are fully compatible.
+
+### Unlinked look-alikes are now reported
+
+A missing Business ID used to be invisible. Any two similarly-named merchants that are **not** linked
+and **both** carry a flat charge are now named on every run, so the operator decides instead of the
+over-charge going unqueried. Two rows at 0/0 are not reported — they cost nothing either way. On the
+current Masterlist that surfaces exactly four pairs awaiting a decision:
+
+```
+PRESTIGE AUTO CLINIC /01   …122 (8.00/0.00)  vs  PRESTIGE AUTO CLINIC  …138 (9.00/4.00)
+SHABAL ALFGAN MANDI …      …336 (1.00/4.00)  vs  SHABAL ALFGAN MANDI … …337 (1.00/4.00)
+SHABAL ALFGAN MANDI …      …336 (1.00/4.00)  vs  SHABAL ALFGAN MANDI … …338 (1.00/4.00)
+DRYMS FWNS KWMBNY   777101639900128 (0.00/4.00) vs DRYMS FWNS KWMBNY …319 (0.00/4.00)
+```
+
+The report also states which mechanism linked each business — `declared IBNDAWOOD` versus
+`SOFTPOS + PAX` — so the audit trail records whether a merge was asserted or inferred.
+
+### Verified
+
+- **Inert without the column.** Same Masterlist with no `Business ID` column, HEAD vs this change:
+  **0 differing cells** across 228 rows × 90 columns.
+- With `IBNDAWOOD` set on the two rows: **19 cells differ across 4 rows** — the IBN DAWOOD NEW line
+  (Gain 8.00 → 0), its Account Code 15 subtotal, that code's reconciliation block, and the grand
+  total. Grand total Gain 663.00 → 655.00, payout +8.00.
+- Grouping is on the normalised value, so case and spacing cannot split a group; the report prints
+  the value as typed.
+- 8,109/8,109 export formulas evaluate to their cached values.
+- The conflict rule still applies to a declared group: two rows that disagree on a non-zero Gain or
+  Fee are reported and left charging separately rather than one figure being picked.
+
+### Superseded
+
+The "generalise SOFTPOS + PAX to any two different platforms" change is **not** needed and was not
+made. An explicit Business ID covers those cases without widening a heuristic that could misfire on
+future data. The user resolved GULF BUTCHERY / LU LU OPTICS / ARABIAN DESERT separately by relabelling
+five Terminal_Mapping rows from `N910-QNB` to `SOFTPOS`, which is safe today because `Model` and
+`Platform` are read in exactly one place, but those rows now describe hardware that does not exist and
+are better replaced by a Business ID.
+
+### Open
+
+- Four unlinked pairs above need a yes/no from the operator.
+- A new third MID for `BAQALA ALNAHR ALJARI LILMAWAD ALGHADAIYA` (`100005269900324`, Mobile) is not
+  linked to the existing SOFTPOS+PAX pair, so that business is charged twice until it gets a
+  Business ID.
+- `MAX MUSCLE GYM` was pointed at `Txn Fee ID 7`, whose note reads "STS/CARRIER" (Debit 2, Himyan 2).
+  Worth confirming that is deliberate.

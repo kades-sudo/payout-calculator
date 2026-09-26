@@ -841,6 +841,7 @@
     ratePerTrnx: ["ratepertrnx", "ratepertxn"],
     refundFee: ["refundfee", "refundcharge", "refundfeepertxn"],
     txnFeeId: ["txnfeeid", "transactionfeeid", "feeid"],
+    businessId: ["businessid", "businessgroup", "businessgroupid", "groupid", "business"],
     gainForBankCharge: ["noqoodygainforbankcharge", "gainforbankcharge", "noqoodygainforbankcharges"],
     payoutProcessingFee: ["payoutprocessingfee"],
     status: ["status"]
@@ -1184,6 +1185,7 @@
         // Blank and 0 both mean "this merchant has no refund fee" — only an explicit amount charges.
         refundFee: toNumber(resolver.refundFee ? row[resolver.refundFee] : ""),
         txnFeeId: resolver.txnFeeId ? row[resolver.txnFeeId] : "",
+        businessId: resolver.businessId ? row[resolver.businessId] : "",
         gainForBankCharge: toNumber(resolver.gainForBankCharge ? row[resolver.gainForBankCharge] : ""),
         payoutProcessingFee: toNumber(resolver.payoutProcessingFee ? row[resolver.payoutProcessingFee] : ""),
         status: resolver.status ? row[resolver.status] : ""
@@ -1358,7 +1360,7 @@
   // carries. Rows that disagree on a non-zero value are NOT grouped - the app never invents which
   // figure was meant; it reports the clash and leaves both rows charging as they did before.
   function buildBusinessIndex(masterListRows, terminalRows){
-    var empty = { businessOf: new Map(), charge: new Map(), groups: [], conflicts: [] };
+    var empty = { businessOf: new Map(), charge: new Map(), groups: [], conflicts: [], unlinked: [] };
     if (!masterListRows || !masterListRows.length) return empty;
     var pos = buildPosKindIndex(terminalRows);
     var resolver = buildResolver(Object.keys(masterListRows[0]), MASTER_FIELD_CANDIDATES);
@@ -1375,6 +1377,11 @@
         displayMid: String(row[resolver.mid]),
         name: name,
         displayName: String(row[resolver.merchantName] === undefined ? "" : row[resolver.merchantName]).trim(),
+        // An explicitly declared group. Blank means "infer it", which is the case for all but a
+        // handful of merchants. Grouped on the normalised value so spacing and case cannot split a
+        // group; displayed as typed.
+        businessId: norm(resolver.businessId ? row[resolver.businessId] : ""),
+        businessIdRaw: String((resolver.businessId ? row[resolver.businessId] : "") || "").trim(),
         softpos: kind.softpos, pax: kind.pax,
         gain: toNumber(resolver.gainForBankCharge ? row[resolver.gainForBankCharge] : ""),
         fee: toNumber(resolver.payoutProcessingFee ? row[resolver.payoutProcessingFee] : "")
@@ -1384,6 +1391,26 @@
     var parent = entries.map(function(_, i){ return i; });
     function find(i){ while (parent[i] !== i){ parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
     function union(i, j){ var a = find(i), b = find(j); if (a !== b) parent[b] = a; }
+
+    // 1. An explicit Business ID. Rows carrying the same one are the same business, full stop - no
+    //    name check, no platform check, nothing inferred. This exists because some pairs cannot be
+    //    inferred at all: IBN DAWOOD REFIXOLEGY CENTRE and IBN DAWOOD REFIXOLEGY CENTRE NEW are two
+    //    PAX MIDs on the same Account Code with one name a prefix of the other - structurally
+    //    identical to WASEEF vs WASEEF CARE and GUCCI VENDOME vs GUCCI VENDOME KIDS, which are
+    //    separate businesses that must each keep their own charge. No rule can tell them apart, so
+    //    the one who knows says so in a cell.
+    var byBusinessId = new Map();
+    entries.forEach(function(e, i){
+      if (!e.businessId) return;
+      if (!byBusinessId.has(e.businessId)) byBusinessId.set(e.businessId, []);
+      byBusinessId.get(e.businessId).push(i);
+    });
+    byBusinessId.forEach(function(idxs){
+      for (var k = 1; k < idxs.length; k++) union(idxs[0], idxs[k]);
+    });
+
+    // 2. The SOFTPOS + PAX inference, for everything not declared. Kept because it already resolves
+    //    most pairs with no data entry at all; a declared Business ID simply adds to it.
     for (var i = 0; i < entries.length; i++){
       for (var j = i + 1; j < entries.length; j++){
         var a = entries[i], b = entries[j];
@@ -1401,7 +1428,7 @@
       buckets.get(root).push(e);
     });
 
-    var index = { businessOf: new Map(), charge: new Map(), groups: [], conflicts: [] };
+    var index = { businessOf: new Map(), charge: new Map(), groups: [], conflicts: [], unlinked: [] };
     buckets.forEach(function(members, root){
       var mids = {};
       members.forEach(function(m){ mids[m.mid + "|" + m.key] = true; });
@@ -1412,10 +1439,15 @@
         if (m.fee) fees[m.fee] = true;
       });
       var gainVals = Object.keys(gains), feeVals = Object.keys(fees);
+      // Which mechanism formed this group, so the report can say whether it was declared or inferred.
+      var declared = members.filter(function(m){ return !!m.businessId; });
       var group = {
         key: "biz" + root,
+        declaredBusinessId: declared.length ? (declared[0].businessIdRaw || declared[0].businessId) : "",
+        declared: declared.length === members.length && members.length > 1,
         members: members.map(function(m){ return { mid: m.mid, key: m.key, displayMid: m.displayMid,
-                                                   name: m.displayName, softpos: m.softpos, pax: m.pax }; }),
+                                                   name: m.displayName, softpos: m.softpos, pax: m.pax,
+                                                   businessId: m.businessId }; }),
         gain: gainVals.length ? toNumber(gainVals[0]) : 0,
         fee: feeVals.length ? toNumber(feeVals[0]) : 0,
         conflict: gainVals.length > 1 || feeVals.length > 1
@@ -1431,6 +1463,25 @@
       index.charge.set(group.key, group);
       index.groups.push(group);
     });
+
+    // Merchants that LOOK like one business but were not linked, so a missing Business ID surfaces on
+    // the run rather than as an over-charge nobody queries. Only pairs that actually carry a flat
+    // charge are worth naming - two rows at 0/0 cost nothing either way.
+    var grouped = index.businessOf;
+    for (var x = 0; x < entries.length; x++){
+      for (var y = x + 1; y < entries.length; y++){
+        var p = entries[x], q = entries[y];
+        if (p.mid === q.mid && p.key === q.key) continue;
+        if (!namesRelated(p.name, q.name)) continue;
+        var gp = grouped.get(p.mid + "|" + p.key), gq = grouped.get(q.mid + "|" + q.key);
+        if (gp && gp === gq) continue;                       // already one business
+        if (!(p.gain || p.fee) || !(q.gain || q.fee)) continue;
+        index.unlinked.push({
+          a: { name: p.displayName, mid: p.displayMid, gain: p.gain, fee: p.fee },
+          b: { name: q.displayName, mid: q.displayMid, gain: q.gain, fee: q.fee }
+        });
+      }
+    }
     return index;
   }
 
@@ -2361,6 +2412,8 @@
         });
         businessPlacements.push({
           key: key,
+          declared: !!charge.declared,
+          declaredBusinessId: charge.declaredBusinessId || "",
           members: charge.members,
           carrierMid: carrier.mid,
           carrierAccountCode: carrier.accountCode,
@@ -2668,6 +2721,7 @@
       specialRateUnpriced: specialRateUnpriced,
       businessPlacements: businessPlacements,
       businessConflicts: (businessIndex && businessIndex.conflicts) || [],
+      businessUnlinked: (businessIndex && businessIndex.unlinked) || [],
       walletConfigured: !!walletConfigured,
       walletSections: paymentGroups.map(function(pg, i){
         return merchantLines.some(function(l){ return l.isWallet && l.groups[i].txnCount > 0; });
@@ -4188,7 +4242,8 @@
                  " (" + (m.softpos ? "SOFTPOS" : m.pax ? "PAX" : "other") + ")";
         }).join(" + ");
         var silent = p.members.filter(function(m){ return p.activeMids.indexOf(String(m.mid)) === -1; });
-        bizHtml += "<div><strong>Same business (SOFTPOS + PAX):</strong> " + names +
+        var how = p.declared ? "declared <code>" + escapeHtml(p.declaredBusinessId) + "</code>" : "SOFTPOS + PAX";
+        bizHtml += "<div><strong>Same business (" + how + "):</strong> " + names +
           " — Gain " + fmtAmount(p.gain) + " and Payout Fee " + fmtAmount(p.fee) +
           " charged once, on Account Code " + escapeHtml(String(p.carrierAccountCode)) +
           (silent.length ? (" (" + silent.map(function(m){ return escapeHtml(String(m.displayMid)); }).join(", ") +
@@ -4202,6 +4257,30 @@
       });
       bizBox.innerHTML = bizHtml;
       body.appendChild(bizBox);
+    }
+
+    // Look-alikes that were NOT linked and both carry a flat charge. Either they are separate
+    // businesses (WASEEF vs WASEEF CARE) and this is correct, or a Business ID is missing and the
+    // business is being charged twice. The app cannot tell which, so it asks rather than guesses.
+    if (report.businessUnlinked && report.businessUnlinked.length){
+      var ulBox = document.createElement("div");
+      ulBox.className = "banner warn";
+      ulBox.style.margin = "0 20px 16px";
+      var ulh = "<strong>" + report.businessUnlinked.length + " similarly-named merchant pair" +
+        (report.businessUnlinked.length === 1 ? "" : "s") + " charged separately.</strong> " +
+        "Each side carries its own Gain / Payout Fee. If a pair is really one business, give both rows the " +
+        "same <strong>Business ID</strong> in Master_List and it will be charged once; if they are separate " +
+        "businesses, this is already correct and nothing needs doing." +
+        "<ul class=\"bank-diff-list\">";
+      report.businessUnlinked.forEach(function(u){
+        ulh += "<li>" + escapeHtml(u.a.name) + " <code>" + escapeHtml(String(u.a.mid)) + "</code> (" +
+          fmtAmount(u.a.gain) + " / " + fmtAmount(u.a.fee) + ")  vs  " +
+          escapeHtml(u.b.name) + " <code>" + escapeHtml(String(u.b.mid)) + "</code> (" +
+          fmtAmount(u.b.gain) + " / " + fmtAmount(u.b.fee) + ")</li>";
+      });
+      ulh += "</ul>";
+      ulBox.innerHTML = ulh;
+      body.appendChild(ulBox);
     }
 
     // Every merchant whose Bank Difference passes the threshold, with the sections behind it. The
