@@ -120,6 +120,14 @@
     background:var(--surface); border:1px solid var(--border); border-radius:12px;
     padding:11px 15px; font-size:12px; box-shadow:var(--shadow);
   }
+  /* The active section's name, at the head of the status strip. It replaces the per-view heading
+     blocks: the strip is already pinned to the top of every section, so one line names the page,
+     states what is loaded and holds the filter, instead of a title paragraph pushing the panels down. */
+  .ds-title{
+    font-family:"IBM Plex Sans Condensed", ui-sans-serif, sans-serif; font-weight:700;
+    font-size:14px; letter-spacing:-0.01em; color:var(--ink); white-space:nowrap;
+    padding-right:12px; margin-right:2px; border-right:1px solid var(--border);
+  }
   .ds-item{ display:flex; align-items:center; gap:7px; color:var(--ink-muted); min-width:0; }
   .ds-item strong{ color:var(--ink); font-weight:600; }
   .ds-dot{ flex:none; width:7px; height:7px; border-radius:50%; background:var(--pending); }
@@ -168,13 +176,8 @@
 
   .view[hidden]{ display:none; }
   .view{ display:flex; flex-direction:column; gap:18px; min-width:0; }
-  .view-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; }
-  .view-title{
-    font-family:"IBM Plex Sans Condensed", ui-sans-serif, sans-serif; font-weight:700;
-    font-size:clamp(22px,3vw,28px); letter-spacing:-0.01em; margin:0;
-  }
-  .view-head{ padding-top:2px; }
-  .view-sub{ color:var(--ink-muted); font-size:13px; max-width:70ch; line-height:1.5; margin-top:3px; }
+  /* .view-head / .view-title / .view-sub removed: every section is now named by .ds-title in the
+     status strip at the top of the page. */
 
   /* Placeholder for a section that isn't built yet */
   .placeholder{ padding:30px 26px; display:flex; flex-direction:column; gap:14px; }
@@ -601,24 +604,12 @@
     <div class="topbar"><div class="datastrip" id="dataStrip"></div></div>
 
     <!-- ===================== DASHBOARD ===================== -->
-    <section class="view" id="viewDashboard" hidden aria-labelledby="dashTitle">
-      <div class="view-head">
-        <div>
-          <h2 class="view-title" id="dashTitle">Dashboard</h2>
-          <p class="view-sub">Transaction counts, payout amounts and profit for the processed batch, grouped by payment category. Figures come from the same calculation as the payout report, so the two can never disagree.</p>
-        </div>
-      </div>
+    <section class="view" id="viewDashboard" hidden aria-label="Dashboard">
       <div id="dashboardBody"></div>
     </section>
 
     <!-- ===================== RECONCILIATION ===================== -->
-    <section class="view" id="viewReconciliation" hidden aria-labelledby="reconTitle">
-      <div class="view-head">
-        <div>
-          <h2 class="view-title" id="reconTitle">Reconciliation</h2>
-          <p class="view-sub">Match the payout report against the audit portal amount.</p>
-        </div>
-      </div>
+    <section class="view" id="viewReconciliation" hidden aria-label="Reconciliation">
       <div class="panel placeholder">
         <span class="placeholder-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-2.5 6h5L5 7Z"/><path d="M19 7l-2.5 6h5L19 7Z"/><path d="M8.5 21h7"/></svg></span>
         <span class="pill">Planned</span>
@@ -3183,9 +3174,9 @@
 
   /* ---------------- App shell: section navigation ---------------- */
   var VIEWS = {
-    dashboard:      { btn: "navDashboard",      view: "viewDashboard" },
-    calculator:     { btn: "navCalculator",     view: "viewCalculator" },
-    reconciliation: { btn: "navReconciliation", view: "viewReconciliation" }
+    dashboard:      { btn: "navDashboard",      view: "viewDashboard",      label: "Dashboard" },
+    calculator:     { btn: "navCalculator",     view: "viewCalculator",     label: "Payout Calculator" },
+    reconciliation: { btn: "navReconciliation", view: "viewReconciliation", label: "Reconciliation" }
   };
 
   function showView(name){
@@ -3202,6 +3193,7 @@
       }
     });
     state.view = name;
+    renderDataStrip();   // the strip carries the section name, so it re-renders on every switch
     if (name === "dashboard") renderDashboardView(state.payoutReport);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -3238,7 +3230,9 @@
         escapeHtml(label) + " " + (value ? "<strong>" + value + "</strong>" : "<strong>—</strong>") + "</span>";
     }
     var omsRows = state.omsFile ? state.omsFile.rows.length : 0;
+    var viewLabel = (VIEWS[state.view] && VIEWS[state.view].label) || "";
     el.innerHTML =
+      (viewLabel ? '<span class="ds-title">' + escapeHtml(viewLabel) + "</span>" : "") +
       item(!!state.masterListRows, "Master List", state.masterFiles.length ? (sheetCount + " sheet" + (sheetCount === 1 ? "" : "s")) : "") +
       item(!!state.frequency, "Frequency", state.frequency || "") +
       item(omsRows > 0, "OMS file", omsRows ? fmtCount(omsRows) + " rows" : "") +
